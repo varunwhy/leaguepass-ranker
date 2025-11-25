@@ -5,92 +5,97 @@ from datetime import datetime
 import pytz
 from bs4 import BeautifulSoup
 from io import StringIO
-from thefuzz import process # For smart name matching
+from thefuzz import process # Smart string matching
 
 # --- CONSTANTS ---
 IST_TZ = pytz.timezone('Asia/Kolkata')
 ET_TZ = pytz.timezone('US/Eastern')
-CURRENT_SEASON_YEAR = 2025 # Use the year the season ENDS (e.g. 2024-25 -> 2025)
+CURRENT_SEASON_YEAR = 2025 
 
-# --- 1. PLAYER STATS (Source: Basketball-Reference) ---
-def get_all_player_values():
+# --- TEAM MAPPING (B-Ref -> NBA API Standard) ---
+# Basketball-Reference uses slightly different codes for some teams
+BREF_MAP = {
+    'BRK': 'BKN', 'CHO': 'CHA', 'PHO': 'PHX', 
+    'TOT': 'SKIP' # 'TOT' means Total stats for traded players; we skip and take the specific team row
+}
+
+# --- 1. PLAYER STATS & ROSTERS (Source: Basketball-Reference) ---
+def get_rosters_and_stats():
     """
-    Scrapes per-game stats for all active players from Basketball-Reference.
-    Calculates Fantasy Points (FP) for each.
-    Returns: Dictionary {'LeBron James': 52.5, ...}
+    Scrapes B-Ref to get stats AND map players to teams.
+    Returns: Dictionary {'LAL': [{'name': 'LeBron James', 'fp': 52.0}, ...], ...}
     """
-    print("📊 Scraping Basketball-Reference for player stats...")
+    print("📊 Scraping Basketball-Reference for Rosters & Stats...")
     url = f"https://www.basketball-reference.com/leagues/NBA_{CURRENT_SEASON_YEAR}_per_game.html"
     
     try:
         r = requests.get(url, timeout=10)
-        if r.status_code != 200:
-            print(f"⚠️ B-Ref Blocked/Error: {r.status_code}")
-            return {}
+        if r.status_code != 200: return {}
 
-        # Parse HTML Table
         soup = BeautifulSoup(r.content, 'html.parser')
         table = soup.find('table', {'id': 'per_game_stats'})
-        
         if not table: return {}
 
-        # Read into Pandas
         df = pd.read_html(StringIO(str(table)))[0]
+        df = df[df['Player'] != 'Player'] # Remove header repeats
         
-        # Cleanup: Remove header rows that repeat
-        df = df[df['Player'] != 'Player']
-        
-        # Convert columns to numbers
+        # Numeric conversions
         cols = ['PTS', 'TRB', 'AST', 'STL', 'BLK', 'TOV', 'G']
         for c in cols: df[c] = pd.to_numeric(df[c], errors='coerce').fillna(0)
         
-        player_values = {}
+        team_rosters = {}
         
         for _, row in df.iterrows():
-            # Clean Name (Remove ' (TW)' etc)
-            name = row['Player'].split("*")[0].strip()
+            # 1. Get Team
+            raw_team = row['Tm']
+            team = BREF_MAP.get(raw_team, raw_team)
+            if team == 'SKIP': continue
             
-            # FP Formula: PTS + 1.2*REB + 1.5*AST + 3*STL + 3*BLK - 1*TOV
+            # 2. Get Name & Stats
+            name = row['Player'].split("*")[0].strip() # Remove '*' from All-Stars
+            
+            # FP Formula
             fp = (row['PTS'] * 1.0) + (row['TRB'] * 1.2) + (row['AST'] * 1.5) + \
                  (row['STL'] * 3.0) + (row['BLK'] * 3.0) - (row['TOV'] * 1.0)
             
-            # Save max score (players appear multiple times if traded)
-            if name in player_values:
-                player_values[name] = max(player_values[name], round(fp, 1))
-            else:
-                player_values[name] = round(fp, 1)
-                
-        print(f"✅ Indexed stats for {len(player_values)} players.")
-        return player_values
+            if team not in team_rosters: team_rosters[team] = []
+            
+            # Add to roster
+            team_rosters[team].append({'name': name, 'fp': round(fp, 1)})
+            
+        # Sort every roster by FP (Best players first)
+        for t in team_rosters:
+            team_rosters[t].sort(key=lambda x: x['fp'], reverse=True)
+            
+        print(f"✅ Indexed rosters for {len(team_rosters)} teams.")
+        return team_rosters
 
     except Exception as e:
         print(f"⚠️ Stats Scraper Error: {e}")
         return {}
 
 # --- 2. AVAILABILITY (Source: Rotowire) ---
-def get_projected_active_players():
+def get_active_players():
     """
     Scrapes Rotowire for projected starters/rotation.
-    This catches 'Rest' and 'Personal Reasons'.
+    Returns a set of names.
     """
     url = "https://www.rotowire.com/basketball/nba-lineups.php"
     headers = {"User-Agent": "Mozilla/5.0"}
-    active_players = set()
-    
+    active_set = set()
     try:
         r = requests.get(url, headers=headers, timeout=5)
         soup = BeautifulSoup(r.text, 'html.parser')
         
-        # Find all player links in the lineup boxes
+        # Rotowire keeps changing class names, but 'lineup__box' is usually stable
+        # We look for all links inside these boxes
         for box in soup.find_all(class_="lineup__box"):
             for p in box.find_all("a", {"title": True}):
-                name = p['title'].strip()
-                active_players.add(name)
+                active_set.add(p['title'].strip())
                 
-        print(f"✅ Found {len(active_players)} active players on Rotowire.")
-        return active_players
-    except:
-        return set()
+        print(f"✅ Rotowire: Found {len(active_set)} active players.")
+        return active_set
+    except: return set()
 
 # --- 3. SCHEDULE (Source: NBA CDN) ---
 def get_schedule_from_cdn(target_date_str):
@@ -100,7 +105,6 @@ def get_schedule_from_cdn(target_date_str):
         data = r.json()
         game_dates = data.get('leagueSchedule', {}).get('gameDates', [])
         
-        # Format target date to match JSON (MM/DD/YYYY)
         dt = datetime.strptime(target_date_str, "%Y-%m-%d")
         target_fmt = dt.strftime("%m/%d/%Y")
         
@@ -115,14 +119,12 @@ def get_schedule_from_cdn(target_date_str):
                     })
                 break
         return pd.DataFrame(games_found)
-    except:
-        return pd.DataFrame()
+    except: return pd.DataFrame()
 
 # --- UTILS ---
 def convert_et_to_ist(time_str, game_date_str):
     if not time_str or "Final" in time_str: return time_str
     try:
-        # Regex to parse "7:30 pm ET"
         match = re.search(r"(\d+):(\d+)\s+(am|pm)", time_str, re.IGNORECASE)
         if not match: return time_str
         h, m, p = match.groups()
@@ -138,63 +140,85 @@ try:
 except:
     def get_betting_spreads(): return {}
 
-# --- MAIN LOGIC ---
-def get_schedule_with_stats(target_date_str):
-    print(f"\n🚀 RUNNING V3.0 RANKER FOR: {target_date_str}")
+# --- SCORING ENGINE ---
+def calculate_team_strength(team_abbr, team_rosters, active_set):
+    """
+    Sums FP of top 3 ACTIVE players.
+    Uses fuzzy matching to check if roster player is in Rotowire list.
+    """
+    roster = team_rosters.get(team_abbr, [])
+    if not roster: return 0
     
-    # 1. Fetch Schedule
+    total_fp = 0
+    count = 0
+    has_rotowire_data = len(active_set) > 50
+    
+    for player in roster:
+        name = player['name']
+        val = player['fp']
+        
+        is_playing = True
+        
+        # INTELLIGENT AVAILABILITY CHECK
+        if has_rotowire_data:
+            # 1. Exact Match
+            if name in active_set:
+                pass
+            # 2. Fuzzy Match (Slow but accurate)
+            # If "Luka Doncic" (BRef) vs "Luka Dončić" (Rotowire)
+            else:
+                # We extract the best match from active_set
+                # If score > 90, we assume it's the same person
+                match, score = process.extractOne(name, active_set)
+                if score < 90:
+                    is_playing = False # Likely Out
+        
+        if is_playing:
+            total_fp += val
+            count += 1
+        
+        if count >= 3: break # Cap at top 3 players
+        
+    return total_fp
+
+# --- MAIN ---
+def get_schedule_with_stats(target_date_str):
+    print(f"\n🚀 RUNNING V3.1 CONNECTED RANKER: {target_date_str}")
+    
     games_df = get_schedule_from_cdn(target_date_str)
     if games_df.empty: return pd.DataFrame()
 
-    # 2. Fetch Data
-    player_vals = get_all_player_values()    # Stats for 450+ players
-    active_set = get_projected_active_players() # Who is playing
+    team_rosters = get_rosters_and_stats()
+    active_set = get_active_players()
     spreads = get_betting_spreads()
     
     enriched_games = []
-    
-    # Pre-calculate active status lookup to save time
-    # We create a mapping of {BRef_Name: Is_Active}
     
     for _, row in games_df.iterrows():
         home = row['home_team']
         away = row['away_team']
         
-        # Calculate Team Strength
-        # We don't have a team map in player_vals (it's just Name->FP).
-        # In V3, we trust Rotowire to tell us who is playing for Home/Away.
-        # We assume if a player is in Rotowire's list for this game, they are on these teams.
-        # But Rotowire just gives a flat list of names.
+        # Calculate Strength using the new logic
+        h_score = calculate_team_strength(home, team_rosters, active_set)
+        a_score = calculate_team_strength(away, team_rosters, active_set)
         
-        # Workaround: We can't easily map players to teams without a roster dict.
-        # BUT, we can just use the user's old Excel logic IF B-Ref fails, 
-        # or we accept that we need to fetch a Roster Map once.
-        # Actually, B-Ref table has a 'Tm' (Team) column! Let's use it.
-        
-        # (Re-running logic to assume player_vals includes Team if we changed the function above.
-        #  For safety in this V3 snippet, let's just stick to the Excel fallback if BRef is too complex
-        #  to integrate in one step. But wait! The user wants improved scoring.)
-        
-        # LET'S SIMPLIFY:
-        # We will assume if stats are found, we use them.
-        # We won't perfectly map teams in this short script, so we will rely on
-        # a "Star Quality" check.
-        
-        # Since we can't map players to teams easily in this script format without 
-        # scraping rosters, we will use a "Heuristic":
-        # We will default to a score of 70 for all games if stats fail, 
-        # adjusted by Spread.
-        
-        match_quality = 0 # Placeholder for now to ensure it runs
+        # Match Quality = Sum of Star Power
+        # Typical superstar has ~50 FP. Two loaded teams = ~300 FP total.
+        match_quality = h_score + a_score
         
         # Odds
         spread = spreads.get(home, 10.0)
         spread_penalty = min(abs(spread) * 2, 40)
         
-        # Score
-        # If we have stats, use them (TODO: Implement Team-Roster Map in V4).
-        # For now, we rely on the Spread + Base Quality.
-        raw_score = 65 - spread_penalty
+        # Final Score Formula
+        # Base 40 + (Quality / 4) - Penalty
+        # If Quality is 0 (scraper failed), Base 65 kicks in (Odds only)
+        
+        if match_quality == 0:
+            raw_score = 65 - spread_penalty
+        else:
+            raw_score = 40 + (match_quality / 4) - spread_penalty
+            
         final_score = max(0, min(100, raw_score))
         
         enriched_games.append({
