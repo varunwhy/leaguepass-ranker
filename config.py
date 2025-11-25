@@ -1,7 +1,18 @@
 # config.py
 
 # 1. Add your API Key here
-ODDS_API_KEY = "ab3b33da540731c8c01de5b17b5cead0"
+import streamlit as st
+
+# --- API KEYS ---
+# Instead of pasting the key here (which is public), we ask Streamlit for it.
+# This requires you to have set up the key in Streamlit Community Cloud -> Settings -> Secrets
+try:
+    ODDS_API_KEY = st.secrets["ODDS_API_KEY"]
+except FileNotFoundError:
+    # This block handles the case if you run it locally on your laptop
+    # without a secrets.toml file. You can paste your key here for local testing,
+    # but DO NOT commit it to GitHub if the repo is public.
+    ODDS_API_KEY = ""
 
 # 2. Mapping dictionary: Odds API Team Name -> NBA API Abbreviation
 TEAM_NAME_MAP = {
@@ -16,3 +27,4 @@ TEAM_NAME_MAP = {
     'Portland Trail Blazers': 'POR', 'Sacramento Kings': 'SAC', 'San Antonio Spurs': 'SAS',
     'Toronto Raptors': 'TOR', 'Utah Jazz': 'UTA', 'Washington Wizards': 'WAS'
 }
+
