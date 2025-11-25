@@ -77,15 +77,23 @@ with st.spinner(f'Scouting games for {selected_date_ist.strftime("%A")}...'):
 
 # --- DISPLAY ---
 if not df.empty and "Score" in df.columns:
-    # Sort by Score (Highest first)
+    # Sort by Score
     df = df.sort_values(by='Score', ascending=False)
     
-    # 1. THE HERO SECTION (Top Game)
+    # 1. DATA SOURCE INDICATOR (NEW)
+    # Check the first row to see if we are using Live Stats or Static Data
+    data_source = df.iloc[0].get('Source', 'Unknown')
+    
+    if data_source == 'Live Stats':
+        st.success(f"🟢 **System Status: ONLINE** | Using Live 2026 Player Stats", icon="✅")
+    else:
+        st.warning(f"🟠 **System Status: OFFLINE** | API Blocked. Using 2025 Static Data & Odds", icon="⚠️")
+    
+    # 2. THE HERO SECTION (Top Game)
     top_game = df.iloc[0]
     
     st.subheader("🔥 Game of the Day")
     
-    # Create a nice card for the top game
     with st.container(border=True):
         col1, col2 = st.columns([3, 1])
         with col1:
@@ -94,17 +102,17 @@ if not df.empty and "Score" in df.columns:
         with col2:
             st.metric("Score", f"{top_game['Score']}", delta="Must Watch" if top_game['Score'] > 80 else None)
             
-        c1, c2, c3 = st.columns(3)
+        c1, c2, c3, c4 = st.columns(4) # Added 4th column for extra detail
         c1.metric("Spread", f"{top_game['Spread']}")
-        c2.metric("Stars", f"{int(top_game['Stars'])} ⭐")
+        c2.metric("Stars", f"{int(top_game['Stars'])}")
         c3.metric("Pace", f"{top_game['Pace']}")
+        c4.caption(f"Data: {top_game.get('Source', 'N/A')}") # Shows source for specific game
 
     st.divider()
     
-    # 2. THE FULL TABLE
+    # 3. THE FULL TABLE
     st.subheader("📋 Full Schedule")
     
-    # Configure columns for a cleaner look
     st.dataframe(
         df,
         column_config={
@@ -112,21 +120,22 @@ if not df.empty and "Score" in df.columns:
             "Matchup": "Game",
             "Score": st.column_config.ProgressColumn(
                 "Watchability",
-                help="0-100 Score based on Stars, Spread, and Standings",
                 format="%.1f",
                 min_value=0,
                 max_value=100,
             ),
             "Spread": st.column_config.NumberColumn("Spread", format="%.1f"),
-            "Stars": st.column_config.NumberColumn("Star Pts", format="%d"),
-            "Win_Pct": st.column_config.NumberColumn("Win %", format="%.0f%%"),
+            "Stars": st.column_config.NumberColumn("Star Power", format="%d"),
+            "Pace": st.column_config.NumberColumn("Pace", format="%.1f"),
+            "Source": st.column_config.TextColumn("Data Source"), # Optional: Show in table
         },
         use_container_width=True,
         hide_index=True,
-        column_order=("Time_IST", "Matchup", "Score", "Spread", "Stars")
+        column_order=("Time_IST", "Matchup", "Score", "Spread", "Stars", "Pace")
     )
 
 elif df.empty:
-    st.warning("No games found for this date. (It might be the offseason or a break!)")
+    st.warning("No games found for this date.")
 else:
+
     st.error("Data loaded but columns are missing. Check ranker.py output.")
