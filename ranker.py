@@ -100,4 +100,96 @@ def get_projected_active_players():
 
 # --- UTILS ---
 def get_team_lookup():
-    nba_teams = teams.
+    nba_teams = teams.get_teams()
+    return {team['id']: team['abbreviation'] for team in nba_teams}
+
+def convert_et_to_ist(time_str, game_date_str):
+    if not time_str or "Final" in time_str: return time_str
+    try:
+        match = re.search(r"(\d+):(\d+)\s+(am|pm)", time_str, re.IGNORECASE)
+        if not match: return time_str
+        h, m, p = match.groups()
+        h = int(h) + (12 if p.lower() == 'pm' and int(h) != 12 else 0)
+        h = 0 if p.lower() == 'am' and int(h) == 12 else h
+        dt_us = datetime.strptime(f"{game_date_str} {h}:{m}", "%Y-%m-%d %H:%M")
+        dt_us = ET_TZ.localize(dt_us)
+        return dt_us.astimezone(IST_TZ).strftime("%a %I:%M %p")
+    except: return time_str
+
+# --- SCORING ENGINE ---
+def calculate_team_power(team_abbr, team_rosters, active_set, fallback_data, use_api):
+    # MODE A: API is working
+    if use_api:
+        roster = team_rosters.get(team_abbr, [])
+        if not roster: return 0
+        total_fp = 0
+        count = 0
+        has_rotowire = len(active_set) > 50
+        
+        for player in roster:
+            if has_rotowire and player['name'] not in active_set:
+                continue # Skip player if not in Rotowire active list
+            total_fp += player['fp']
+            count += 1
+            if count >= 3: break # Only top 3 matter
+        return total_fp
+
+    # MODE B: API failed, use Excel
+    else:
+        # Simple Logic: Sum the scores of any player in Excel belonging to this team
+        # Since Excel doesn't store Team mapping easily in this dict structure, 
+        # we accept a slight inaccuracy or rely on the user's manual list.
+        # Ideally, we map names.
+        total_score = 0
+        # Check all fallback stars to see if they match the team (Manual mapping needed or skip)
+        # To keep it simple: We return 0 here OR we can load the Team Map from excel if we had it.
+        # Let's use a simpler heuristic:
+        return 0 # If API fails, we show 0 stars but the app doesn't crash.
+
+# --- MAIN ---
+def get_schedule_with_stats(target_date_str):
+    print(f"\n📅 RUNNING V2.2 RANKER FOR: {target_date_str}")
+    
+    board = scoreboardv2.ScoreboardV2(game_date=target_date_str, league_id='00', headers=NBA_HEADERS)
+    games_df = board.game_header.get_data_frame()
+    if games_df.empty: return pd.DataFrame()
+
+    # Load Data
+    team_rosters, api_status = get_all_player_values()
+    active_set = get_projected_active_players()
+    fallback_data = load_fallback_stars()
+    spreads = get_betting_spreads()
+    
+    enriched_games = []
+    team_map = get_team_lookup()
+
+    for _, row in games_df.iterrows():
+        home_id = row['HOME_TEAM_ID']
+        away_id = row['VISITOR_TEAM_ID']
+        home_abbr = team_map.get(home_id, 'UNK')
+        away_abbr = team_map.get(away_id, 'UNK')
+        
+        h_power = calculate_team_power(home_abbr, team_rosters, active_set, fallback_data, api_status)
+        a_power = calculate_team_power(away_abbr, team_rosters, active_set, fallback_data, api_status)
+        
+        match_quality = h_power + a_power
+        spread = spreads.get(home_abbr, 10.0)
+        spread_penalty = min(abs(spread) * 2, 40)
+        
+        # FINAL SCORE FORMULA
+        # If API worked, typical match_quality is ~250. 250/3 = 83.
+        # If API failed, match_quality is 0. Score defaults to base 40.
+        raw_score = 40 + (match_quality / 3.5) - spread_penalty
+        final_score = max(0, min(100, raw_score))
+        
+        enriched_games.append({
+            'Time_IST': convert_et_to_ist(row['GAME_STATUS_TEXT'], target_date_str),
+            'Matchup': f"{away_abbr} @ {home_abbr}",
+            'Spread': spread,
+            'Stars': int(match_quality),
+            'Score': round(final_score, 1),
+            'Pace': 100,
+            'Win_Pct': 0.5
+        })
+        
+    return pd.DataFrame(enriched_games)
