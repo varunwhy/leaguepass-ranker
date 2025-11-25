@@ -187,6 +187,8 @@ def get_schedule_with_stats(target_date_str):
             'Score': round(final_score, 1),
             'Pace': round(avg_pace, 1),
             'Win_Pct': 0.5 # Placeholder or fetch from static
+            'Source': source
         })
         
     return pd.DataFrame(enriched_games)
+
