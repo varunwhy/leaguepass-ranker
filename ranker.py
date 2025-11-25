@@ -10,7 +10,7 @@ from thefuzz import process # Smart string matching
 # --- CONSTANTS ---
 IST_TZ = pytz.timezone('Asia/Kolkata')
 ET_TZ = pytz.timezone('US/Eastern')
-CURRENT_SEASON_YEAR = 2025 
+CURRENT_SEASON_YEAR = 2026 
 
 # --- TEAM MAPPING (B-Ref -> NBA API Standard) ---
 # Basketball-Reference uses slightly different codes for some teams
@@ -232,3 +232,4 @@ def get_schedule_with_stats(target_date_str):
         })
         
     return pd.DataFrame(enriched_games)
+
