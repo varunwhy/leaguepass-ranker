@@ -5,3 +5,4 @@ pytz
 requests
 lxml
 openpyxl
+beautifulsoup4
