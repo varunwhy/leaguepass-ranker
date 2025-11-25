@@ -186,9 +186,10 @@ def get_schedule_with_stats(target_date_str):
             'Stars': int(match_quality), # This is now distinct per game!
             'Score': round(final_score, 1),
             'Pace': round(avg_pace, 1),
-            'Win_Pct': 0.5 # Placeholder or fetch from static
+            'Win_Pct': 0.5, # Placeholder or fetch from static
             'Source': source
         })
         
     return pd.DataFrame(enriched_games)
+
 
