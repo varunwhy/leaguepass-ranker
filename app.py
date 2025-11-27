@@ -84,10 +84,11 @@ if not df.empty and "Score" in df.columns:
     # Check the first row to see if we are using Live Stats or Static Data
     data_source = df.iloc[0].get('Source', 'Unknown')
     
-    if data_source == 'Live Stats':
-        st.success(f"🟢 **System Status: ONLINE** | Using Live 2026 Player Stats", icon="✅")
+    # FIX: Use 'in' to match partial string, or match the exact string
+    if "Live Stats" in data_source:
+        st.success(f"🟢 **System Status: ONLINE** | {data_source}", icon="✅")
     else:
-        st.warning(f"🟠 **System Status: OFFLINE** | API Blocked. Using 2025 Static Data & Odds", icon="⚠️")
+        st.warning(f"🟠 **System Status: OFFLINE** | API Blocked. Using Static Data", icon="⚠️")
     
     # 2. THE HERO SECTION (Top Game)
     top_game = df.iloc[0]
@@ -139,3 +140,4 @@ elif df.empty:
 else:
 
     st.error("Data loaded but columns are missing. Check ranker.py output.")
+
