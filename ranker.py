@@ -106,4 +106,63 @@ def get_schedule_with_stats(target_date_str):
                 roster = db['players'].get(team_abbr, [])
                 if not roster: 
                     # Fallback to Net Rating if Roster empty
-                    net = db['teams'].get(team_abbr, {'net
+                    net = db['teams'].get(team_abbr, {'net_rating': 0})['net_rating']
+                    return 50 + (net * 3)
+
+                fp_sum = 0
+                count = 0
+                
+                # 2. Sum Top 3 Active Players
+                for p in roster:
+                    name = p['name']
+                    # Check Availability
+                    is_active = False
+                    if name in active_set:
+                        is_active = True
+                    else:
+                        # Fuzzy Check (Handle 'Luka Doncic' vs 'Luka Dončić')
+                        match, score = process.extractOne(name, active_set)
+                        if score > 90: is_active = True
+                    
+                    if is_active:
+                        fp_sum += p['fp']
+                        count += 1
+                    
+                    if count >= 3: break
+                
+                # If sum is very low (e.g. < 40), something might be wrong, 
+                # but we trust the data.
+                return fp_sum
+
+            h_power = get_team_power(home)
+            a_power = get_team_power(away)
+            
+            # --- GET PACE ---
+            h_pace = db['teams'].get(home, {'pace': 100})['pace']
+            a_pace = db['teams'].get(away, {'pace': 100})['pace']
+        
+        # --- CALCULATE SCORE ---
+        # Normalize Power (Typical superteam sum is ~150-180 FP for top 3)
+        match_quality = (h_power + a_power) / 3.5 
+        
+        avg_pace = (h_pace + a_pace) / 2
+        spread = spreads.get(home, 10.0)
+        spread_penalty = min(abs(spread) * 2.5, 45)
+        pace_bonus = max(0, (avg_pace - 98) * 1.5)
+        
+        # Base 35
+        raw_score = 35 + (match_quality * 0.6) + pace_bonus - spread_penalty
+        final_score = max(0, min(100, raw_score))
+        
+        enriched_games.append({
+            'Time_IST': convert_et_to_ist(row['time'], target_date_str),
+            'Matchup': f"{away} @ {home}",
+            'Spread': spread,
+            'Stars': int(match_quality),
+            'Score': round(final_score, 1),
+            'Pace': round(avg_pace, 1),
+            'Win_Pct': 0.5,
+            'Source': source
+        })
+        
+    return pd.DataFrame(enriched_games)
