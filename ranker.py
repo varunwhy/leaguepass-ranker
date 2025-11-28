@@ -91,7 +91,7 @@ def load_injuries():
         return injured_set
     except: return set()
 
-# --- 4. SCHEDULE (CDN - UTC FIX) ---
+# --- 4. SCHEDULE & TV (ROBUST TV FIX) ---
 def get_schedule_from_cdn(target_date_str):
     url = "https://cdn.nba.com/static/json/staticData/scheduleLeagueV2.json"
     try:
@@ -104,18 +104,27 @@ def get_schedule_from_cdn(target_date_str):
         for d in data['leagueSchedule']['gameDates']:
             if target_fmt in d['gameDate']:
                 for game in d['games']:
-                    nat_tv = ""
-                    broadcasters = game.get('broadcasters', {}).get('national', [])
-                    if broadcasters: nat_tv = broadcasters[0]['broadcasterDisplay']
                     
+                    # --- TV LOGIC FIX ---
+                    tv_display = "League Pass" # Default
+                    broadcasters = game.get('broadcasters', {})
+                    
+                    # 1. Check National TV first (ESPN, TNT, NBATV)
+                    nat_list = broadcasters.get('national', [])
+                    if nat_list:
+                        tv_display = nat_list[0]['broadcasterDisplay']
+                    
+                    # 2. If no national, just mark as 'Local' or leave as League Pass
+                    else:
+                        tv_display = "Local Broadcast"
+
                     games.append({
                         'home': game['homeTeam']['teamTricode'],
                         'away': game['awayTeam']['teamTricode'],
                         'home_id': game['homeTeam']['teamId'],
                         'away_id': game['awayTeam']['teamId'],
-                        # CRITICAL FIX: Use UTC Time, not Text
                         'utc_time': game['gameDateTimeUTC'], 
-                        'tv': nat_tv
+                        'tv': tv_display
                     })
                 break
         return pd.DataFrame(games)
@@ -129,19 +138,12 @@ except:
 # --- HELPER: UTC to IST ---
 def convert_utc_to_ist(utc_str):
     try:
-        # Parse ISO 8601 (e.g. 2025-11-29T23:30:00Z)
         dt_utc = datetime.strptime(utc_str, "%Y-%m-%dT%H:%M:%SZ")
         dt_utc = dt_utc.replace(tzinfo=pytz.utc)
-        
-        # Convert to IST
         dt_ist = dt_utc.astimezone(IST_TZ)
         
-        # Format for Display: "Sat 06:00 AM"
         time_str = dt_ist.strftime("%a %I:%M %p")
-        
-        # Format for Sorting: 6.0 (float)
         sort_hour = dt_ist.hour + (dt_ist.minute / 60.0)
-        
         return time_str, sort_hour
     except:
         return "TBD", 0.0
@@ -187,8 +189,10 @@ def get_schedule_with_stats(target_date_str):
         avg_off = (h_info['ortg'] + a_info['ortg']) / 2
         style_bonus = max(0, (avg_off - 112) * 0.8)
         
-        # 3. TV
-        tv_bonus = 5 if row['tv'] in ['ESPN', 'TNT', 'ABC', 'NBATV'] else 0
+        # 3. TV BONUS
+        # Give bonus if it's a "Big" national broadcaster
+        tv_name = row['tv']
+        tv_bonus = 5 if any(x in tv_name for x in ['ESPN', 'TNT', 'ABC', 'NBATV']) else 0
         
         # 4. SPREAD
         spread = spreads.get(home, 10.0)
@@ -198,9 +202,8 @@ def get_schedule_with_stats(target_date_str):
         raw_score = 30 + star_score + quality_score + narrative_bonus + style_bonus + tv_bonus - spread_penalty
         final_score = max(0, min(100, raw_score))
         
-        # TIME CONVERSION
+        # TIME
         ist_time, sort_hour = convert_utc_to_ist(row['utc_time'])
-        
         source = "Manual CSV" if rosters else "Static Fallback"
         
         enriched_games.append({
@@ -210,7 +213,7 @@ def get_schedule_with_stats(target_date_str):
             'Spread': spread,
             'Stars': int(h_stars + a_stars),
             'Score': round(final_score, 1),
-            'TV': row['tv'],
+            'TV': tv_name,
             'Home_Logo': TEAM_LOGOS_URL.format(row['home_id']),
             'Away_Logo': TEAM_LOGOS_URL.format(row['away_id']),
             'Source': source
