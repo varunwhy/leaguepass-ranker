@@ -12,47 +12,54 @@ ET_TZ = pytz.timezone('US/Eastern')
 STATS_CSV = 'stats.csv'
 TEAM_LOGOS_URL = "https://cdn.nba.com/logos/nba/{}/primary/L/logo.svg"
 
+# --- STATIC DATA (2024-25 Season Stats) ---
+# Used for PACE and as a FALLBACK if CSV fails
+STATIC_TEAM_STATS = {
+    'OKC': {'net': 11.5, 'pace': 100.0}, 'CLE': {'net': 10.2, 'pace': 101.8},
+    'BOS': {'net': 9.8, 'pace': 97.5},   'GSW': {'net': 8.5, 'pace': 102.1},
+    'MEM': {'net': 6.5, 'pace': 104.2},  'NYK': {'net': 5.5, 'pace': 98.5},
+    'DAL': {'net': 4.8, 'pace': 100.5},  'MIN': {'net': 4.5, 'pace': 99.2},
+    'DEN': {'net': 3.2, 'pace': 101.0},  'LAL': {'net': 1.5, 'pace': 103.5},
+    'SAC': {'net': 1.2, 'pace': 102.0},  'PHX': {'net': 1.0, 'pace': 100.8},
+    'IND': {'net': 0.5, 'pace': 104.5},  'MIA': {'net': 0.2, 'pace': 98.0},
+    'ORL': {'net': 0.0, 'pace': 99.5},   'LAC': {'net': -0.5, 'pace': 100.2},
+    'HOU': {'net': -1.0, 'pace': 101.5}, 'ATL': {'net': -1.5, 'pace': 104.0},
+    'BKN': {'net': -2.5, 'pace': 99.0},  'SAS': {'net': -3.0, 'pace': 101.5},
+    'CHA': {'net': -4.5, 'pace': 100.5}, 'DET': {'net': -5.0, 'pace': 101.2},
+    'TOR': {'net': -6.5, 'pace': 101.8}, 'POR': {'net': -7.5, 'pace': 100.5},
+    'NOP': {'net': -8.0, 'pace': 99.8},  'CHI': {'net': -8.5, 'pace': 103.8},
+    'WAS': {'net': -9.5, 'pace': 104.5}, 'UTA': {'net': -10.5, 'pace': 102.0},
+    'PHI': {'net': -2.0, 'pace': 98.5},  'MIL': {'net': 2.5, 'pace': 100.5}
+}
+
 # --- 1. LOAD DATA (Manual CSV) ---
 def load_player_stats_from_csv():
-    if not os.path.exists(STATS_CSV):
-        return None
-    
+    if not os.path.exists(STATS_CSV): return None
     try:
         df = pd.read_csv(STATS_CSV)
-        # Filter header rows
         df = df[df['Player'] != 'Player']
-        
-        # Map Teams
         BREF_MAP = {'BRK': 'BKN', 'CHO': 'CHA', 'PHO': 'PHX', 'TOT': 'SKIP'}
         
         rosters = {}
-        
         for _, row in df.iterrows():
             raw_team = row['Tm']
             team = BREF_MAP.get(raw_team, raw_team)
             if team == 'SKIP': continue
             
-            # Clean Name
-            name = str(row['Player']).split("\\")[0]
-            
             try:
                 # Calc FP
                 fp = float(row['PTS']) + (1.2*float(row['TRB'])) + (1.5*float(row['AST'])) + \
                      (3*float(row['STL'])) + (3*float(row['BLK'])) - float(row['TOV'])
-            except: 
-                continue
+                
+                if team not in rosters: rosters[team] = []
+                rosters[team].append({'fp': round(fp, 1)})
+            except: continue
             
-            if team not in rosters: rosters[team] = []
-            rosters[team].append({'name': name, 'fp': round(fp, 1)})
-            
-        # Sort
+        # Sort desc
         for t in rosters:
             rosters[t].sort(key=lambda x: x['fp'], reverse=True)
-            
         return rosters
-    except Exception as e:
-        print(f"Error reading CSV: {e}")
-        return None
+    except: return None
 
 # --- 2. SCHEDULE (CDN) ---
 def get_schedule_from_cdn(target_date_str):
@@ -112,23 +119,37 @@ def get_schedule_with_stats(target_date_str):
         home = row['home']
         away = row['away']
         
-        h_power, a_power = 50, 50
-        source = "Static Fallback"
+        # 1. PACE (From Static Data)
+        h_pace = STATIC_TEAM_STATS.get(home, {'pace': 100})['pace']
+        a_pace = STATIC_TEAM_STATS.get(away, {'pace': 100})['pace']
+        avg_pace = (h_pace + a_pace) / 2
         
-        if team_rosters:
+        # 2. POWER (Try CSV -> Fallback to Static Net Rating)
+        source = "Static Data"
+        if team_rosters and home in team_rosters:
+            # CSV Loaded Successfully
             source = "Manual CSV"
-            # Sum Top 3 Players
-            if home in team_rosters:
-                h_power = sum([p['fp'] for p in team_rosters[home][:3]])
-            if away in team_rosters:
-                a_power = sum([p['fp'] for p in team_rosters[away][:3]])
+            h_power = sum([p['fp'] for p in team_rosters[home][:3]])
+            a_power = sum([p['fp'] for p in team_rosters[away][:3]])
+            # Normalize: CSV sums are ~150. We want ~80-90 range for formula.
+            match_quality = (h_power + a_power) / 3.5
+        else:
+            # Fallback to Net Rating
+            h_net = STATIC_TEAM_STATS.get(home, {'net':0})['net']
+            a_net = STATIC_TEAM_STATS.get(away, {'net':0})['net']
+            # Convert -10..+10 range to 0..100 scale
+            h_power = 50 + (h_net * 3)
+            a_power = 50 + (a_net * 3)
+            match_quality = (h_power + a_power) / 2
         
-        match_quality = (h_power + a_power) / 3.5 
-        
+        # 3. SCORING FORMULA
         spread = spreads.get(home, 10.0)
         spread_penalty = min(abs(spread) * 2.5, 45)
         
-        raw_score = 35 + (match_quality * 0.6) - spread_penalty
+        # Add Pace Bonus (If pace > 98, add points)
+        pace_bonus = max(0, (avg_pace - 98) * 1.5)
+        
+        raw_score = 35 + (match_quality * 0.6) + pace_bonus - spread_penalty
         final_score = max(0, min(100, raw_score))
         
         enriched_games.append({
@@ -137,6 +158,7 @@ def get_schedule_with_stats(target_date_str):
             'Spread': spread,
             'Stars': int(match_quality),
             'Score': round(final_score, 1),
+            'Pace': round(avg_pace, 1),
             'Home_Logo': TEAM_LOGOS_URL.format(row['home_id']),
             'Away_Logo': TEAM_LOGOS_URL.format(row['away_id']),
             'Source': source
