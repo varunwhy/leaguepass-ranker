@@ -122,8 +122,10 @@ def get_schedule_from_cdn(target_date_str):
         return pd.DataFrame(games)
     except: return pd.DataFrame()
 
-try: from odds import get_betting_spreads
-except: def get_betting_spreads(): return {}
+try: 
+    from odds import get_betting_spreads
+except: 
+    def get_betting_spreads(): return {}
 
 def convert_et_to_ist(time_str, game_date_str):
     if not time_str or "Final" in time_str: return time_str
@@ -216,3 +218,4 @@ def get_schedule_with_stats(target_date_str):
         })
         
     return pd.DataFrame(enriched_games)
+
