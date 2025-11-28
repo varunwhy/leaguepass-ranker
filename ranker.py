@@ -49,37 +49,31 @@ def load_players():
         return rosters
     except: return {}
 
-# --- 2. LOAD TEAM STATS (Manual CSV) ---
+# --- 2. LOAD TEAM STATS ---
 def load_team_stats():
-    # Defaults: 50% Win Rate, 0 Net Rating
     defaults = {k: {'pace': 100.0, 'net': 0.0, 'ortg': 115.0, 'wins': 0.5} for k in TEAM_MAP.values()}
     if not os.path.exists(TEAM_CSV): return defaults
-    
     try:
         df = pd.read_csv(TEAM_CSV)
         if 'Team' in df.columns: df = df[df['Team'] != 'League Average']
-        
         for _, row in df.iterrows():
             full_name = str(row['Team']).replace('*', '')
             abbr = TEAM_MAP.get(full_name)
             if abbr:
                 try:
-                    # Calculate Win % (W / (W+L))
                     w = float(row['W'])
                     l = float(row['L'])
-                    win_pct = w / (w + l) if (w + l) > 0 else 0.5
-                    
                     defaults[abbr] = {
                         'pace': float(row['Pace']),
                         'net': float(row['NRtg']),
                         'ortg': float(row['ORtg']),
-                        'wins': win_pct
+                        'wins': w / (w + l) if (w + l) > 0 else 0.5
                     }
                 except: continue
         return defaults
     except: return defaults
 
-# --- 3. LOAD INJURIES (CBS) ---
+# --- 3. LOAD INJURIES ---
 def load_injuries():
     if not os.path.exists(INJURY_HTML): return set()
     try:
@@ -97,12 +91,14 @@ def load_injuries():
         return injured_set
     except: return set()
 
-# --- 4. SCHEDULE & TV (CDN) ---
+# --- 4. SCHEDULE (CDN - UTC FIX) ---
 def get_schedule_from_cdn(target_date_str):
     url = "https://cdn.nba.com/static/json/staticData/scheduleLeagueV2.json"
     try:
         r = requests.get(url, timeout=5)
         data = r.json()
+        
+        # Convert Target Date to NBA Date String (MM/DD/YYYY)
         dt = datetime.strptime(target_date_str, "%Y-%m-%d")
         target_fmt = dt.strftime("%m/%d/%Y")
         
@@ -110,55 +106,54 @@ def get_schedule_from_cdn(target_date_str):
         for d in data['leagueSchedule']['gameDates']:
             if target_fmt in d['gameDate']:
                 for game in d['games']:
-                    # Extract National TV
+                    # GET BROADCASTER
                     nat_tv = ""
                     broadcasters = game.get('broadcasters', {}).get('national', [])
-                    if broadcasters:
-                        nat_tv = broadcasters[0]['broadcasterDisplay']
+                    if broadcasters: nat_tv = broadcasters[0]['broadcasterDisplay']
                     
                     games.append({
                         'home': game['homeTeam']['teamTricode'],
                         'away': game['awayTeam']['teamTricode'],
                         'home_id': game['homeTeam']['teamId'],
                         'away_id': game['awayTeam']['teamId'],
-                        'time': game.get('gameStatusText', ''),
+                        # FIX: Grab the UTC Timestamp!
+                        'utc_time': game['gameDateTimeUTC'], 
                         'tv': nat_tv
                     })
                 break
         return pd.DataFrame(games)
     except: return pd.DataFrame()
 
+# --- HELPER: UTC to IST ---
+def convert_utc_to_ist(utc_str):
+    """
+    Converts ISO format (2025-11-29T00:30:00Z) to IST string and Hour Float.
+    """
+    try:
+        # Parse ISO format (Z indicates UTC)
+        dt_utc = datetime.strptime(utc_str, "%Y-%m-%dT%H:%M:%SZ")
+        dt_utc = dt_utc.replace(tzinfo=pytz.utc)
+        
+        # Convert to IST
+        dt_ist = dt_utc.astimezone(IST_TZ)
+        
+        # Format string: "Sat 06:00 AM"
+        time_str = dt_ist.strftime("%a %I:%M %p")
+        
+        # Calculate decimal hour for sorting (e.g. 6:30 -> 6.5)
+        # Note: We use 24-hour format for sorting logic
+        sort_hour = dt_ist.hour + (dt_ist.minute / 60.0)
+        
+        return time_str, sort_hour
+    except:
+        return "TBD", 0.0
+
 # --- ODDS ---
 try: from odds import get_betting_spreads
 except: 
     def get_betting_spreads(): return {}
 
-# --- HELPER: Time Parsing for Sorting ---
-def parse_time(time_str, date_str):
-    # Returns 24h float for sorting (e.g. 6.5 for 6:30 AM)
-    try:
-        match = re.search(r"(\d+):(\d+)\s+(am|pm)", time_str, re.IGNORECASE)
-        if not match: return 0
-        h, m, p = match.groups()
-        h = int(h) + (12 if p.lower() == 'pm' and int(h) != 12 else 0)
-        h = 0 if p.lower() == 'am' and int(h) == 12 else h
-        return h + (int(m)/60)
-    except: return 0
-
-def convert_et_to_ist(time_str, game_date_str):
-    if not time_str or "Final" in time_str: return time_str
-    try:
-        match = re.search(r"(\d+):(\d+)\s+(am|pm)", time_str, re.IGNORECASE)
-        if not match: return time_str
-        h, m, p = match.groups()
-        h = int(h) + (12 if p.lower() == 'pm' and int(h) != 12 else 0)
-        h = 0 if p.lower() == 'am' and int(h) == 12 else h
-        dt_us = datetime.strptime(f"{game_date_str} {h}:{m}", "%Y-%m-%d %H:%M")
-        dt_us = ET_TZ.localize(dt_us)
-        return dt_us.astimezone(IST_TZ).strftime("%a %I:%M %p")
-    except: return time_str
-
-# --- MAIN ENGINE (V10) ---
+# --- MAIN ENGINE ---
 def get_schedule_with_stats(target_date_str):
     games_df = get_schedule_from_cdn(target_date_str)
     if games_df.empty: return pd.DataFrame()
@@ -174,7 +169,7 @@ def get_schedule_with_stats(target_date_str):
         home = row['home']
         away = row['away']
         
-        # 1. STAR POWER (Weighted)
+        # 1. STAR POWER
         def get_stars(team):
             if team not in rosters: return 150.0
             avail = [p['fp'] for p in rosters[team] if p['name'] not in injured_set]
@@ -187,58 +182,37 @@ def get_schedule_with_stats(target_date_str):
         a_stars = get_stars(away)
         star_score = (h_stars + a_stars) / 6.0 
         
-        # 2. QUALITY & NARRATIVE (Win %)
+        # 2. QUALITY
         h_info = team_stats.get(home, {'net':0, 'wins':0.5, 'ortg':115})
         a_info = team_stats.get(away, {'net':0, 'wins':0.5, 'ortg':115})
-        
-        # Net Rating Bonus
         quality_score = (h_info['net'] + a_info['net']) * 1.5
         
-        # "Contender Bonus" (Narrative)
-        # If both teams are winning (>60%), it's a narrative game.
         narrative_bonus = 0
-        if h_info['wins'] > 0.60 and a_info['wins'] > 0.60:
-            narrative_bonus = 10 # Big game!
-        elif h_info['wins'] > 0.50 and a_info['wins'] > 0.50:
-            narrative_bonus = 5  # Solid game
+        if h_info['wins'] > 0.60 and a_info['wins'] > 0.60: narrative_bonus = 10
+        elif h_info['wins'] > 0.50 and a_info['wins'] > 0.50: narrative_bonus = 5
             
-        # 3. STYLE (Offense)
         avg_off = (h_info['ortg'] + a_info['ortg']) / 2
         style_bonus = max(0, (avg_off - 112) * 0.8)
         
-        # 4. BROADCAST BONUS
-        tv_bonus = 0
-        if row['tv'] in ['ESPN', 'TNT', 'ABC', 'NBATV']:
-            tv_bonus = 5
+        # 3. TV BONUS
+        tv_bonus = 5 if row['tv'] in ['ESPN', 'TNT', 'ABC', 'NBATV'] else 0
         
-        # 5. SPREAD
+        # 4. SPREAD
         spread = spreads.get(home, 10.0)
         spread_penalty = min(abs(spread) * 2.5, 45)
         
-        # FINAL FORMULA
+        # FORMULA
         raw_score = 30 + star_score + quality_score + narrative_bonus + style_bonus + tv_bonus - spread_penalty
         final_score = max(0, min(100, raw_score))
         
-        # Sorting Helper (IST Hour)
-        # 1. Convert "7:30 pm ET" to "06.5" (float hour in IST) for sorting
-        # This allows us to split Early vs Late games easily
-        ist_str = convert_et_to_ist(row['time'], target_date_str)
-        # Extract hour float from IST string (e.g. "Sat 06:30 AM" -> 6.5)
-        match = re.search(r"(\d+):(\d+)\s+(AM|PM)", ist_str)
-        if match:
-            h, m, p = match.groups()
-            h = int(h)
-            if p == "PM" and h != 12: h += 12
-            if p == "AM" and h == 12: h = 0
-            sort_hour = h + (int(m)/60)
-        else:
-            sort_hour = 0
-
+        # --- TIME CONVERSION (The Fix) ---
+        ist_time_str, sort_hour = convert_utc_to_ist(row['utc_time'])
+        
         source = "Manual CSV" if rosters else "Static Fallback"
         
         enriched_games.append({
-            'Time_IST': ist_str,
-            'Sort_Hour': sort_hour, # Hidden column for logic
+            'Time_IST': ist_time_str,
+            'Sort_Hour': sort_hour,
             'Matchup': f"{away} @ {home}",
             'Spread': spread,
             'Stars': int(h_stars + a_stars),
@@ -250,4 +224,3 @@ def get_schedule_with_stats(target_date_str):
         })
         
     return pd.DataFrame(enriched_games)
-
