@@ -111,13 +111,14 @@ if not df.empty and "Score" in df.columns:
 
     st.divider()
     
-    # 3. THE FULL TABLE
+    
     st.subheader("📋 Full Schedule")
     
     st.dataframe(
         df,
         column_config={
-            "Time_IST": "Time",
+            "Home_Logo": st.column_config.ImageColumn("Home", width="small"),
+            "Away_Logo": st.column_config.ImageColumn("Away", width="small"),
             "Matchup": "Game",
             "Score": st.column_config.ProgressColumn(
                 "Watchability",
@@ -127,12 +128,11 @@ if not df.empty and "Score" in df.columns:
             ),
             "Spread": st.column_config.NumberColumn("Spread", format="%.1f"),
             "Stars": st.column_config.NumberColumn("Star Power", format="%d"),
-            "Pace": st.column_config.NumberColumn("Pace", format="%.1f"),
-            "Source": st.column_config.TextColumn("Data Source"), # Optional: Show in table
         },
         use_container_width=True,
         hide_index=True,
-        column_order=("Time_IST", "Matchup", "Score", "Spread", "Stars", "Pace")
+        # Reorder columns to put Logos next to Matchup
+        column_order=("Time", "Away_Logo", "Home_Logo", "Matchup", "Score", "Spread", "Stars")
     )
 
 elif df.empty:
@@ -140,4 +140,5 @@ elif df.empty:
 else:
 
     st.error("Data loaded but columns are missing. Check ranker.py output.")
+
 
