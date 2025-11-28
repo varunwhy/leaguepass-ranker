@@ -8,7 +8,6 @@ import pytz
 
 # --- CONSTANTS ---
 IST_TZ = pytz.timezone('Asia/Kolkata')
-ET_TZ = pytz.timezone('US/Eastern')
 STATS_CSV = 'stats.csv'
 TEAM_CSV = 'team_stats.csv'
 INJURY_HTML = 'injuries.html'
@@ -34,7 +33,6 @@ def load_players():
     try:
         df = pd.read_csv(STATS_CSV)
         df = df[df['Player'] != 'Player']
-        
         BREF_ABBR = {'BRK': 'BKN', 'CHO': 'CHA', 'PHO': 'PHX', 'TOT': 'SKIP'}
         
         rosters = {}
@@ -45,7 +43,6 @@ def load_players():
             
             name = str(row['Player']).split("\\")[0]
             try:
-                # Calc FP
                 fp = float(row['PTS']) + (1.2*float(row['TRB'])) + (1.5*float(row['AST'])) + \
                      (3*float(row['STL'])) + (3*float(row['BLK'])) - float(row.get('TOV', 0))
                 
@@ -53,6 +50,7 @@ def load_players():
                 rosters[team].append({'name': name, 'fp': round(fp, 1)})
             except: continue
             
+        # Sort desc
         for t in rosters:
             rosters[t].sort(key=lambda x: x['fp'], reverse=True)
         return rosters
@@ -62,7 +60,6 @@ def load_players():
 def load_team_stats():
     defaults = {k: {'pace': 100.0, 'net': 0.0} for k in TEAM_MAP.values()}
     if not os.path.exists(TEAM_CSV): return defaults
-    
     try:
         df = pd.read_csv(TEAM_CSV)
         if 'Team' in df.columns:
@@ -71,7 +68,6 @@ def load_team_stats():
         for _, row in df.iterrows():
             full_name = str(row['Team']).replace('*', '')
             abbr = TEAM_MAP.get(full_name)
-            
             if abbr:
                 try:
                     defaults[abbr] = {
@@ -80,9 +76,7 @@ def load_team_stats():
                     }
                 except: continue
         return defaults
-    except Exception as e:
-        print(f"Team Stats Error: {e}")
-        return defaults
+    except: return defaults
 
 # --- 3. LOAD INJURIES (CBS HTML) ---
 def load_injuries():
@@ -90,7 +84,6 @@ def load_injuries():
     try:
         dfs = pd.read_html(INJURY_HTML)
         injured_set = set()
-        
         for df in dfs:
             if 'Player' in df.columns:
                 status_col = 'Injury Status' if 'Injury Status' in df.columns else 'Status'
@@ -129,14 +122,9 @@ def get_schedule_from_cdn(target_date_str):
         return pd.DataFrame(games)
     except: return pd.DataFrame()
 
-# --- ODDS HELPER (FIXED SYNTAX) ---
-try: 
-    from odds import get_betting_spreads
-except: 
-    def get_betting_spreads(): 
-        return {}
+try: from odds import get_betting_spreads
+except: def get_betting_spreads(): return {}
 
-# --- HELPER ---
 def convert_et_to_ist(time_str, game_date_str):
     if not time_str or "Final" in time_str: return time_str
     try:
@@ -150,7 +138,7 @@ def convert_et_to_ist(time_str, game_date_str):
         return dt_us.astimezone(IST_TZ).strftime("%a %I:%M %p")
     except: return time_str
 
-# --- MAIN ENGINE ---
+# --- MAIN ENGINE (HYBRID LOGIC) ---
 def get_schedule_with_stats(target_date_str):
     games_df = get_schedule_from_cdn(target_date_str)
     if games_df.empty: return pd.DataFrame()
@@ -166,31 +154,51 @@ def get_schedule_with_stats(target_date_str):
         home = row['home']
         away = row['away']
         
-        # 1. PACE
-        h_pace = team_stats.get(home, {'pace': 100})['pace']
-        a_pace = team_stats.get(away, {'pace': 100})['pace']
-        avg_pace = (h_pace + a_pace) / 2
-        
-        # 2. POWER
-        def get_power(team):
+        # 1. STAR POWER (Superstar Weighted)
+        def get_weighted_stars(team):
             if team not in rosters: 
-                return 50 + (team_stats.get(team, {'net':0})['net'] * 3)
+                # Fallback: Assume average stars (50 * 3) = 150
+                return 150.0 
             
             # Filter Available
             available = [p['fp'] for p in rosters[team] if p['name'] not in injured_set]
-            return sum(available[:3])
+            
+            # Weighted Sum: #1 gets 1.5x, #2 gets 1.0x, #3 gets 0.5x
+            # This emphasizes the "Alpha" star massively.
+            weights = [1.5, 1.0, 0.5]
+            score = 0
+            for i, fp in enumerate(available[:3]):
+                score += fp * weights[i]
+            return score
 
-        h_power = get_power(home)
-        a_power = get_power(away)
+        h_stars = get_weighted_stars(home)
+        a_stars = get_weighted_stars(away)
         
-        match_quality = (h_power + a_power) / 3.5
+        # Combined Star Power (Normalized)
+        # Max theoretical: ~140 (Home) + ~140 (Away) = 280
+        # We divide by 4.5 to get it into a ~60 point range
+        star_score = (h_stars + a_stars) / 4.5
         
-        # 3. SCORE
+        # 2. TEAM QUALITY (Net Rating)
+        h_net = team_stats.get(home, {'net': 0})['net']
+        a_net = team_stats.get(away, {'net': 0})['net']
+        
+        # Add Net Rating directly. Two good teams (+5 each) = +10 Bonus.
+        quality_bonus = h_net + a_net
+        
+        # 3. PACE (Minor Tie-Breaker)
+        h_pace = team_stats.get(home, {'pace': 100})['pace']
+        a_pace = team_stats.get(away, {'pace': 100})['pace']
+        avg_pace = (h_pace + a_pace) / 2
+        pace_bonus = max(0, (avg_pace - 98) * 1.0) # Slightly reduced weight
+        
+        # 4. SPREAD (Linear Penalty)
         spread = spreads.get(home, 10.0)
         spread_penalty = min(abs(spread) * 2.5, 45)
-        pace_bonus = max(0, (avg_pace - 98) * 1.5)
         
-        raw_score = 35 + (match_quality * 0.6) + pace_bonus - spread_penalty
+        # --- FINAL SCORE ---
+        # Base 20 (Lower base, relying more on Stars/Quality)
+        raw_score = 20 + star_score + quality_bonus + pace_bonus - spread_penalty
         final_score = max(0, min(100, raw_score))
         
         source = "Manual CSV" if rosters else "Static Fallback"
@@ -199,7 +207,7 @@ def get_schedule_with_stats(target_date_str):
             'Time': convert_et_to_ist(row['time'], target_date_str),
             'Matchup': f"{away} @ {home}",
             'Spread': spread,
-            'Stars': int(match_quality),
+            'Stars': int(h_stars + a_stars), # Display raw weighted total
             'Score': round(final_score, 1),
             'Pace': round(avg_pace, 1),
             'Home_Logo': TEAM_LOGOS_URL.format(row['home_id']),
