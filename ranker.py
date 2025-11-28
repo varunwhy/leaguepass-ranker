@@ -58,8 +58,10 @@ def load_players():
 
 # --- 2. LOAD TEAM STATS (Manual CSV) ---
 def load_team_stats():
-    defaults = {k: {'pace': 100.0, 'net': 0.0} for k in TEAM_MAP.values()}
+    # Default: Average Pace (100), Neutral Net (0), Avg Offense (115)
+    defaults = {k: {'pace': 100.0, 'net': 0.0, 'ortg': 115.0} for k in TEAM_MAP.values()}
     if not os.path.exists(TEAM_CSV): return defaults
+    
     try:
         df = pd.read_csv(TEAM_CSV)
         if 'Team' in df.columns:
@@ -68,16 +70,18 @@ def load_team_stats():
         for _, row in df.iterrows():
             full_name = str(row['Team']).replace('*', '')
             abbr = TEAM_MAP.get(full_name)
+            
             if abbr:
                 try:
                     defaults[abbr] = {
                         'pace': float(row['Pace']),
-                        'net': float(row['NRtg'])
+                        'net': float(row['NRtg']),
+                        'ortg': float(row['ORtg']) # <--- NEW METRIC
                     }
                 except: continue
         return defaults
     except: return defaults
-
+        
 # --- 3. LOAD INJURIES (CBS HTML) ---
 def load_injuries():
     if not os.path.exists(INJURY_HTML): return set()
@@ -140,7 +144,7 @@ def convert_et_to_ist(time_str, game_date_str):
         return dt_us.astimezone(IST_TZ).strftime("%a %I:%M %p")
     except: return time_str
 
-# --- MAIN ENGINE (HYBRID LOGIC) ---
+# --- MAIN ENGINE (The "Four Pillars" Logic) ---
 def get_schedule_with_stats(target_date_str):
     games_df = get_schedule_from_cdn(target_date_str)
     if games_df.empty: return pd.DataFrame()
@@ -156,18 +160,11 @@ def get_schedule_with_stats(target_date_str):
         home = row['home']
         away = row['away']
         
-        # 1. STAR POWER (Superstar Weighted)
+        # 1. STAR GRAVITY (Weighted FP)
         def get_weighted_stars(team):
-            if team not in rosters: 
-                # Fallback: Assume average stars (50 * 3) = 150
-                return 150.0 
-            
-            # Filter Available
+            if team not in rosters: return 150.0 # Fallback
             available = [p['fp'] for p in rosters[team] if p['name'] not in injured_set]
-            
-            # Weighted Sum: #1 gets 1.5x, #2 gets 1.0x, #3 gets 0.5x
-            # This emphasizes the "Alpha" star massively.
-            weights = [1.5, 1.0, 0.5]
+            weights = [1.5, 1.0, 0.5] # Alpha star matters most
             score = 0
             for i, fp in enumerate(available[:3]):
                 score += fp * weights[i]
@@ -175,32 +172,31 @@ def get_schedule_with_stats(target_date_str):
 
         h_stars = get_weighted_stars(home)
         a_stars = get_weighted_stars(away)
+        # Normalize: Combined ~300 -> 50 pts
+        star_score = (h_stars + a_stars) / 6.0 
         
-        # Combined Star Power (Normalized)
-        # Max theoretical: ~140 (Home) + ~140 (Away) = 280
-        # We divide by 4.5 to get it into a ~60 point range
-        star_score = (h_stars + a_stars) / 4.5
-        
-        # 2. TEAM QUALITY (Net Rating)
+        # 2. QUALITY (Net Rating)
+        # Reward good teams playing good teams
         h_net = team_stats.get(home, {'net': 0})['net']
         a_net = team_stats.get(away, {'net': 0})['net']
+        # If both are positive, big bonus. If both negative, penalty.
+        quality_score = (h_net + a_net) * 1.5
         
-        # Add Net Rating directly. Two good teams (+5 each) = +10 Bonus.
-        quality_bonus = h_net + a_net
+        # 3. STYLE (Offensive Rating + Pace)
+        # We want high scoring games. Avg ORtg is 115.
+        h_off = team_stats.get(home, {'ortg': 115})['ortg']
+        a_off = team_stats.get(away, {'ortg': 115})['ortg']
+        avg_off = (h_off + a_off) / 2
+        # Bonus: For every point above 112 ORtg, add 0.5 to score
+        style_bonus = max(0, (avg_off - 112) * 0.8)
         
-        # 3. PACE (Minor Tie-Breaker)
-        h_pace = team_stats.get(home, {'pace': 100})['pace']
-        a_pace = team_stats.get(away, {'pace': 100})['pace']
-        avg_pace = (h_pace + a_pace) / 2
-        pace_bonus = max(0, (avg_pace - 98) * 1.0) # Slightly reduced weight
-        
-        # 4. SPREAD (Linear Penalty)
+        # 4. SUSPENSE (Spread)
         spread = spreads.get(home, 10.0)
         spread_penalty = min(abs(spread) * 2.5, 45)
         
         # --- FINAL SCORE ---
-        # Base 20 (Lower base, relying more on Stars/Quality)
-        raw_score = 20 + star_score + quality_bonus + pace_bonus - spread_penalty
+        # Base 30
+        raw_score = 30 + star_score + quality_score + style_bonus - spread_penalty
         final_score = max(0, min(100, raw_score))
         
         source = "Manual CSV" if rosters else "Static Fallback"
@@ -209,13 +205,14 @@ def get_schedule_with_stats(target_date_str):
             'Time': convert_et_to_ist(row['time'], target_date_str),
             'Matchup': f"{away} @ {home}",
             'Spread': spread,
-            'Stars': int(h_stars + a_stars), # Display raw weighted total
+            'Stars': int(h_stars + a_stars),
             'Score': round(final_score, 1),
-            'Pace': round(avg_pace, 1),
+            'Pace': round(team_stats.get(home, {'pace':100})['pace'], 1), # Just for display
             'Home_Logo': TEAM_LOGOS_URL.format(row['home_id']),
             'Away_Logo': TEAM_LOGOS_URL.format(row['away_id']),
             'Source': source
         })
         
     return pd.DataFrame(enriched_games)
+
 
