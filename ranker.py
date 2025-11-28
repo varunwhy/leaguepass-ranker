@@ -8,82 +8,125 @@ import pytz
 
 # --- CONSTANTS ---
 IST_TZ = pytz.timezone('Asia/Kolkata')
-ET_TZ = pytz.timezone('US/Eastern')
 STATS_CSV = 'stats.csv'
+TEAM_CSV = 'team_stats.csv'
+INJURY_HTML = 'injuries.html'
 TEAM_LOGOS_URL = "https://cdn.nba.com/logos/nba/{}/primary/L/logo.svg"
 
-# --- STATIC DATA (2024-25 Season Stats) ---
-# Used for PACE and as a FALLBACK if CSV fails
-STATIC_TEAM_STATS = {
-    'OKC': {'net': 11.5, 'pace': 100.0}, 'CLE': {'net': 10.2, 'pace': 101.8},
-    'BOS': {'net': 9.8, 'pace': 97.5},   'GSW': {'net': 8.5, 'pace': 102.1},
-    'MEM': {'net': 6.5, 'pace': 104.2},  'NYK': {'net': 5.5, 'pace': 98.5},
-    'DAL': {'net': 4.8, 'pace': 100.5},  'MIN': {'net': 4.5, 'pace': 99.2},
-    'DEN': {'net': 3.2, 'pace': 101.0},  'LAL': {'net': 1.5, 'pace': 103.5},
-    'SAC': {'net': 1.2, 'pace': 102.0},  'PHX': {'net': 1.0, 'pace': 100.8},
-    'IND': {'net': 0.5, 'pace': 104.5},  'MIA': {'net': 0.2, 'pace': 98.0},
-    'ORL': {'net': 0.0, 'pace': 99.5},   'LAC': {'net': -0.5, 'pace': 100.2},
-    'HOU': {'net': -1.0, 'pace': 101.5}, 'ATL': {'net': -1.5, 'pace': 104.0},
-    'BKN': {'net': -2.5, 'pace': 99.0},  'SAS': {'net': -3.0, 'pace': 101.5},
-    'CHA': {'net': -4.5, 'pace': 100.5}, 'DET': {'net': -5.0, 'pace': 101.2},
-    'TOR': {'net': -6.5, 'pace': 101.8}, 'POR': {'net': -7.5, 'pace': 100.5},
-    'NOP': {'net': -8.0, 'pace': 99.8},  'CHI': {'net': -8.5, 'pace': 103.8},
-    'WAS': {'net': -9.5, 'pace': 104.5}, 'UTA': {'net': -10.5, 'pace': 102.0},
-    'PHI': {'net': -2.0, 'pace': 98.5},  'MIL': {'net': 2.5, 'pace': 100.5}
+# --- TEAM MAPPER (Full Name -> Abbr) ---
+TEAM_MAP = {
+    'Atlanta Hawks': 'ATL', 'Boston Celtics': 'BOS', 'Brooklyn Nets': 'BKN',
+    'Charlotte Hornets': 'CHA', 'Chicago Bulls': 'CHI', 'Cleveland Cavaliers': 'CLE',
+    'Dallas Mavericks': 'DAL', 'Denver Nuggets': 'DEN', 'Detroit Pistons': 'DET',
+    'Golden State Warriors': 'GSW', 'Houston Rockets': 'HOU', 'Indiana Pacers': 'IND',
+    'Los Angeles Clippers': 'LAC', 'Los Angeles Lakers': 'LAL', 'Memphis Grizzlies': 'MEM',
+    'Miami Heat': 'MIA', 'Milwaukee Bucks': 'MIL', 'Minnesota Timberwolves': 'MIN',
+    'New Orleans Pelicans': 'NOP', 'New York Knicks': 'NYK', 'Oklahoma City Thunder': 'OKC',
+    'Orlando Magic': 'ORL', 'Philadelphia 76ers': 'PHI', 'Phoenix Suns': 'PHX',
+    'Portland Trail Blazers': 'POR', 'Sacramento Kings': 'SAC', 'San Antonio Spurs': 'SAS',
+    'Toronto Raptors': 'TOR', 'Utah Jazz': 'UTA', 'Washington Wizards': 'WAS'
 }
 
-# --- 1. LOAD DATA (Manual CSV) ---
-def load_player_stats_from_csv():
-    if not os.path.exists(STATS_CSV): return None
+# --- 1. LOAD PLAYERS (Manual CSV) ---
+def load_players():
+    if not os.path.exists(STATS_CSV): return {}
     try:
         df = pd.read_csv(STATS_CSV)
-        # Filter header rows (just in case)
         df = df[df['Player'] != 'Player']
         
-        BREF_MAP = {'BRK': 'BKN', 'CHO': 'CHA', 'PHO': 'PHX', 'TOT': 'SKIP'}
+        # B-Ref legacy mapping for Player Stats
+        BREF_ABBR = {'BRK': 'BKN', 'CHO': 'CHA', 'PHO': 'PHX', 'TOT': 'SKIP'}
         
         rosters = {}
-        
         for _, row in df.iterrows():
-            # FIX: Look for 'Team' (your CSV header) instead of 'Tm'
-            # We use .get() so it works with either 'Team' or 'Tm'
             raw_team = row.get('Team', row.get('Tm', 'SKIP'))
-            
-            team = BREF_MAP.get(raw_team, raw_team)
+            team = BREF_ABBR.get(raw_team, raw_team)
             if team == 'SKIP': continue
             
-            # Clean Name
             name = str(row['Player']).split("\\")[0]
-            
             try:
                 # Calc FP
-                # ensure these columns exist in your CSV or use .get(col, 0)
-                pts = float(row['PTS'])
-                trb = float(row['TRB'])
-                ast = float(row['AST'])
-                stl = float(row['STL'])
-                blk = float(row['BLK'])
-                tov = float(row.get('TOV', row.get('TO', 0))) # Handle TOV vs TO
-                
-                fp = pts + (1.2*trb) + (1.5*ast) + (3*stl) + (3*blk) - tov
+                fp = float(row['PTS']) + (1.2*float(row['TRB'])) + (1.5*float(row['AST'])) + \
+                     (3*float(row['STL'])) + (3*float(row['BLK'])) - float(row.get('TOV', 0))
                 
                 if team not in rosters: rosters[team] = []
-                rosters[team].append({'fp': round(fp, 1)})
-            except: 
-                continue
+                rosters[team].append({'name': name, 'fp': round(fp, 1)})
+            except: continue
             
-        # Sort desc
         for t in rosters:
             rosters[t].sort(key=lambda x: x['fp'], reverse=True)
-            
-        # Debug print to confirm it worked in logs
-        print(f"✅ CSV Loaded: Found {len(rosters)} teams.")
         return rosters
-    except Exception as e: 
-        print(f"❌ CSV Error: {e}")
-        return None
+    except: return {}
+
+# --- 2. LOAD TEAM STATS (Manual CSV) ---
+def load_team_stats():
+    """
+    Reads team_stats.csv for Pace and Net Rating.
+    """
+    defaults = {k: {'pace': 100.0, 'net': 0.0} for k in TEAM_MAP.values()}
+    
+    if not os.path.exists(TEAM_CSV): return defaults
+    
+    try:
+        df = pd.read_csv(TEAM_CSV)
+        df = df[df['Team'] != 'League Average'] # Skip footer
         
-# --- 2. SCHEDULE (CDN) ---
+        for _, row in df.iterrows():
+            full_name = row['Team'].replace('*', '') # Remove playoff asterisk
+            abbr = TEAM_MAP.get(full_name)
+            
+            if abbr:
+                try:
+                    defaults[abbr] = {
+                        'pace': float(row['Pace']),
+                        'net': float(row['NRtg'])
+                    }
+                except: continue
+        return defaults
+    except Exception as e:
+        print(f"Team Stats Error: {e}")
+        return defaults
+
+# --- 3. LOAD INJURIES (Manual HTML) ---
+def load_injuries():
+    """
+    Parses local injuries.html (Saved from CBS Sports) to find 'Out' players.
+    """
+    if not os.path.exists(INJURY_HTML): 
+        print("⚠️ Injury file not found.")
+        return set()
+    
+    try:
+        # Pandas reads all tables on the page
+        dfs = pd.read_html(INJURY_HTML)
+        
+        injured_set = set()
+        
+        # CBS often splits tables by Team, or has one big table. 
+        # We loop through ALL tables found to be safe.
+        for df in dfs:
+            # Check if this table has the right columns
+            # CBS columns are usually: Player, Position, Updated, Injury, Injury Status
+            if 'Player' in df.columns and 'Injury Status' in df.columns:
+                for _, row in df.iterrows():
+                    try:
+                        name = row['Player']
+                        status = str(row['Injury Status']).lower()
+                        
+                        # Filter for keywords indicating they are NOT playing
+                        # "Out", "Expected to be out", "Doubtful"
+                        if "out" in status or "doubtful" in status:
+                            injured_set.add(name)
+                    except: continue
+                    
+        print(f"✅ Loaded {len(injured_set)} injured players from CBS.")
+        return injured_set
+        
+    except Exception as e:
+        print(f"Injury Parse Error: {e}")
+        return set()
+        
+# --- 4. SCHEDULE & ODDS (Live) ---
 def get_schedule_from_cdn(target_date_str):
     url = "https://cdn.nba.com/static/json/staticData/scheduleLeagueV2.json"
     try:
@@ -92,11 +135,11 @@ def get_schedule_from_cdn(target_date_str):
         dt = datetime.strptime(target_date_str, "%Y-%m-%d")
         target_fmt = dt.strftime("%m/%d/%Y")
         
-        games_found = []
+        games = []
         for d in data['leagueSchedule']['gameDates']:
             if target_fmt in d['gameDate']:
                 for game in d['games']:
-                    games_found.append({
+                    games.append({
                         'home': game['homeTeam']['teamTricode'],
                         'away': game['awayTeam']['teamTricode'],
                         'home_id': game['homeTeam']['teamId'],
@@ -104,14 +147,11 @@ def get_schedule_from_cdn(target_date_str):
                         'time': game.get('gameStatusText', '')
                     })
                 break
-        return pd.DataFrame(games_found)
+        return pd.DataFrame(games)
     except: return pd.DataFrame()
 
-# --- 3. ODDS ---
-try:
-    from odds import get_betting_spreads
-except:
-    def get_betting_spreads(): return {}
+try: from odds import get_betting_spreads
+except: def get_betting_spreads(): return {}
 
 # --- HELPER ---
 def convert_et_to_ist(time_str, game_date_str):
@@ -127,12 +167,15 @@ def convert_et_to_ist(time_str, game_date_str):
         return dt_us.astimezone(IST_TZ).strftime("%a %I:%M %p")
     except: return time_str
 
-# --- MAIN RANKER ---
+# --- MAIN ENGINE ---
 def get_schedule_with_stats(target_date_str):
     games_df = get_schedule_from_cdn(target_date_str)
     if games_df.empty: return pd.DataFrame()
 
-    team_rosters = load_player_stats_from_csv()
+    # Load All Manual Data
+    rosters = load_players()
+    team_stats = load_team_stats()
+    injured_set = load_injuries()
     spreads = get_betting_spreads()
     
     enriched_games = []
@@ -141,38 +184,38 @@ def get_schedule_with_stats(target_date_str):
         home = row['home']
         away = row['away']
         
-        # 1. PACE (From Static Data)
-        h_pace = STATIC_TEAM_STATS.get(home, {'pace': 100})['pace']
-        a_pace = STATIC_TEAM_STATS.get(away, {'pace': 100})['pace']
+        # 1. PACE (From team_stats.csv)
+        h_pace = team_stats.get(home, {'pace': 100})['pace']
+        a_pace = team_stats.get(away, {'pace': 100})['pace']
         avg_pace = (h_pace + a_pace) / 2
         
-        # 2. POWER (Try CSV -> Fallback to Static Net Rating)
-        source = "Static Data"
-        if team_rosters and home in team_rosters:
-            # CSV Loaded Successfully
-            source = "Manual CSV"
-            h_power = sum([p['fp'] for p in team_rosters[home][:3]])
-            a_power = sum([p['fp'] for p in team_rosters[away][:3]])
-            # Normalize: CSV sums are ~150. We want ~80-90 range for formula.
-            match_quality = (h_power + a_power) / 3.5
-        else:
-            # Fallback to Net Rating
-            h_net = STATIC_TEAM_STATS.get(home, {'net':0})['net']
-            a_net = STATIC_TEAM_STATS.get(away, {'net':0})['net']
-            # Convert -10..+10 range to 0..100 scale
-            h_power = 50 + (h_net * 3)
-            a_power = 50 + (a_net * 3)
-            match_quality = (h_power + a_power) / 2
+        # 2. POWER (Roster FP - Injured Players)
+        def get_power(team):
+            if team not in rosters: 
+                # Fallback to Net Rating if no roster
+                return 50 + (team_stats.get(team, {'net':0})['net'] * 3)
+            
+            # Sum Top 3 AVAILABLE Players
+            # We filter out players found in 'injured_set'
+            available = [p['fp'] for p in rosters[team] if p['name'] not in injured_set]
+            
+            # Take top 3 of who is left
+            return sum(available[:3])
+
+        h_power = get_power(home)
+        a_power = get_power(away)
         
-        # 3. SCORING FORMULA
+        match_quality = (h_power + a_power) / 3.5
+        
+        # 3. SCORE
         spread = spreads.get(home, 10.0)
         spread_penalty = min(abs(spread) * 2.5, 45)
-        
-        # Add Pace Bonus (If pace > 98, add points)
         pace_bonus = max(0, (avg_pace - 98) * 1.5)
         
         raw_score = 35 + (match_quality * 0.6) + pace_bonus - spread_penalty
         final_score = max(0, min(100, raw_score))
+        
+        source = "Manual Data" if rosters else "Static Fallback"
         
         enriched_games.append({
             'Time': convert_et_to_ist(row['time'], target_date_str),
@@ -187,4 +230,3 @@ def get_schedule_with_stats(target_date_str):
         })
         
     return pd.DataFrame(enriched_games)
-
