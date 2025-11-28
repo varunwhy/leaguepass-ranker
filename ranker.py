@@ -37,30 +37,52 @@ def load_player_stats_from_csv():
     if not os.path.exists(STATS_CSV): return None
     try:
         df = pd.read_csv(STATS_CSV)
+        # Filter header rows (just in case)
         df = df[df['Player'] != 'Player']
+        
         BREF_MAP = {'BRK': 'BKN', 'CHO': 'CHA', 'PHO': 'PHX', 'TOT': 'SKIP'}
         
         rosters = {}
+        
         for _, row in df.iterrows():
-            raw_team = row['Tm']
+            # FIX: Look for 'Team' (your CSV header) instead of 'Tm'
+            # We use .get() so it works with either 'Team' or 'Tm'
+            raw_team = row.get('Team', row.get('Tm', 'SKIP'))
+            
             team = BREF_MAP.get(raw_team, raw_team)
             if team == 'SKIP': continue
             
+            # Clean Name
+            name = str(row['Player']).split("\\")[0]
+            
             try:
                 # Calc FP
-                fp = float(row['PTS']) + (1.2*float(row['TRB'])) + (1.5*float(row['AST'])) + \
-                     (3*float(row['STL'])) + (3*float(row['BLK'])) - float(row['TOV'])
+                # ensure these columns exist in your CSV or use .get(col, 0)
+                pts = float(row['PTS'])
+                trb = float(row['TRB'])
+                ast = float(row['AST'])
+                stl = float(row['STL'])
+                blk = float(row['BLK'])
+                tov = float(row.get('TOV', row.get('TO', 0))) # Handle TOV vs TO
+                
+                fp = pts + (1.2*trb) + (1.5*ast) + (3*stl) + (3*blk) - tov
                 
                 if team not in rosters: rosters[team] = []
                 rosters[team].append({'fp': round(fp, 1)})
-            except: continue
+            except: 
+                continue
             
         # Sort desc
         for t in rosters:
             rosters[t].sort(key=lambda x: x['fp'], reverse=True)
+            
+        # Debug print to confirm it worked in logs
+        print(f"✅ CSV Loaded: Found {len(rosters)} teams.")
         return rosters
-    except: return None
-
+    except Exception as e: 
+        print(f"❌ CSV Error: {e}")
+        return None
+        
 # --- 2. SCHEDULE (CDN) ---
 def get_schedule_from_cdn(target_date_str):
     url = "https://cdn.nba.com/static/json/staticData/scheduleLeagueV2.json"
@@ -165,3 +187,4 @@ def get_schedule_with_stats(target_date_str):
         })
         
     return pd.DataFrame(enriched_games)
+
