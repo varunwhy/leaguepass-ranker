@@ -27,7 +27,7 @@ TEAM_MAP = {
     'Toronto Raptors': 'TOR', 'Utah Jazz': 'UTA', 'Washington Wizards': 'WAS'
 }
 
-# --- 1. LOAD PLAYERS (Manual CSV) ---
+# --- 1. LOAD PLAYERS ---
 def load_players():
     if not os.path.exists(STATS_CSV): return {}
     try:
@@ -97,8 +97,6 @@ def get_schedule_from_cdn(target_date_str):
     try:
         r = requests.get(url, timeout=5)
         data = r.json()
-        
-        # Convert Target Date to NBA Date String (MM/DD/YYYY)
         dt = datetime.strptime(target_date_str, "%Y-%m-%d")
         target_fmt = dt.strftime("%m/%d/%Y")
         
@@ -106,7 +104,6 @@ def get_schedule_from_cdn(target_date_str):
         for d in data['leagueSchedule']['gameDates']:
             if target_fmt in d['gameDate']:
                 for game in d['games']:
-                    # GET BROADCASTER
                     nat_tv = ""
                     broadcasters = game.get('broadcasters', {}).get('national', [])
                     if broadcasters: nat_tv = broadcasters[0]['broadcasterDisplay']
@@ -116,7 +113,7 @@ def get_schedule_from_cdn(target_date_str):
                         'away': game['awayTeam']['teamTricode'],
                         'home_id': game['homeTeam']['teamId'],
                         'away_id': game['awayTeam']['teamId'],
-                        # FIX: Grab the UTC Timestamp!
+                        # CRITICAL FIX: Use UTC Time, not Text
                         'utc_time': game['gameDateTimeUTC'], 
                         'tv': nat_tv
                     })
@@ -124,34 +121,30 @@ def get_schedule_from_cdn(target_date_str):
         return pd.DataFrame(games)
     except: return pd.DataFrame()
 
+# --- ODDS ---
+try: from odds import get_betting_spreads
+except: 
+    def get_betting_spreads(): return {}
+
 # --- HELPER: UTC to IST ---
 def convert_utc_to_ist(utc_str):
-    """
-    Converts ISO format (2025-11-29T00:30:00Z) to IST string and Hour Float.
-    """
     try:
-        # Parse ISO format (Z indicates UTC)
+        # Parse ISO 8601 (e.g. 2025-11-29T23:30:00Z)
         dt_utc = datetime.strptime(utc_str, "%Y-%m-%dT%H:%M:%SZ")
         dt_utc = dt_utc.replace(tzinfo=pytz.utc)
         
         # Convert to IST
         dt_ist = dt_utc.astimezone(IST_TZ)
         
-        # Format string: "Sat 06:00 AM"
+        # Format for Display: "Sat 06:00 AM"
         time_str = dt_ist.strftime("%a %I:%M %p")
         
-        # Calculate decimal hour for sorting (e.g. 6:30 -> 6.5)
-        # Note: We use 24-hour format for sorting logic
+        # Format for Sorting: 6.0 (float)
         sort_hour = dt_ist.hour + (dt_ist.minute / 60.0)
         
         return time_str, sort_hour
     except:
         return "TBD", 0.0
-
-# --- ODDS ---
-try: from odds import get_betting_spreads
-except: 
-    def get_betting_spreads(): return {}
 
 # --- MAIN ENGINE ---
 def get_schedule_with_stats(target_date_str):
@@ -169,7 +162,7 @@ def get_schedule_with_stats(target_date_str):
         home = row['home']
         away = row['away']
         
-        # 1. STAR POWER
+        # 1. STARS
         def get_stars(team):
             if team not in rosters: return 150.0
             avail = [p['fp'] for p in rosters[team] if p['name'] not in injured_set]
@@ -194,24 +187,24 @@ def get_schedule_with_stats(target_date_str):
         avg_off = (h_info['ortg'] + a_info['ortg']) / 2
         style_bonus = max(0, (avg_off - 112) * 0.8)
         
-        # 3. TV BONUS
+        # 3. TV
         tv_bonus = 5 if row['tv'] in ['ESPN', 'TNT', 'ABC', 'NBATV'] else 0
         
         # 4. SPREAD
         spread = spreads.get(home, 10.0)
         spread_penalty = min(abs(spread) * 2.5, 45)
         
-        # FORMULA
+        # FINAL
         raw_score = 30 + star_score + quality_score + narrative_bonus + style_bonus + tv_bonus - spread_penalty
         final_score = max(0, min(100, raw_score))
         
-        # --- TIME CONVERSION (The Fix) ---
-        ist_time_str, sort_hour = convert_utc_to_ist(row['utc_time'])
+        # TIME CONVERSION
+        ist_time, sort_hour = convert_utc_to_ist(row['utc_time'])
         
         source = "Manual CSV" if rosters else "Static Fallback"
         
         enriched_games.append({
-            'Time_IST': ist_time_str,
+            'Time_IST': ist_time,
             'Sort_Hour': sort_hour,
             'Matchup': f"{away} @ {home}",
             'Spread': spread,
