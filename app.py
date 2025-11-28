@@ -131,7 +131,6 @@ if not df.empty and "Score" in df.columns:
         },
         use_container_width=True,
         hide_index=True,
-        # Reorder columns to put Logos next to Matchup
         column_order=("Time", "Away_Logo", "Home_Logo", "Matchup", "Score", "Spread", "Stars")
     )
 
@@ -140,5 +139,6 @@ elif df.empty:
 else:
 
     st.error("Data loaded but columns are missing. Check ranker.py output.")
+
 
 
