@@ -3,128 +3,101 @@ import pandas as pd
 from datetime import datetime, timedelta
 import pytz
 
-# Import backend logic
 try:
     from ranker import get_schedule_with_stats, IST_TZ
 except ImportError:
-    st.error("Could not import 'ranker.py'. Make sure files are in the same folder.")
+    st.error("Missing ranker.py")
     st.stop()
 
-# --- PAGE CONFIG ---
-st.set_page_config(
-    page_title="NBA League Pass Ranker",
-    page_icon="🏀",
-    layout="wide",
-    initial_sidebar_state="expanded"
-)
+st.set_page_config(page_title="NBA Ranker", page_icon="🏀", layout="wide")
 
-# --- CSS HACKS ---
+# CSS
 st.markdown("""
     <style>
-    .block-container {
-        padding-top: 3rem;
-        padding-bottom: 0rem;
-    }
-    [data-testid="stMetricValue"] {
-        font-size: 1.5rem;
-    }
+    .block-container { padding-top: 3rem; }
+    [data-testid="stMetricValue"] { font-size: 1.2rem; }
     </style>
     """, unsafe_allow_html=True)
 
-# --- SIDEBAR ---
+# Sidebar
 with st.sidebar:
     st.title("🏀 NBA Ranker")
-    st.caption("Plan your viewing schedule.")
-    
-    today_ist = datetime.now(IST_TZ).date()
-    default_date = today_ist + timedelta(days=1)
-    
-    selected_date_ist = st.date_input(
-        "Select Broadcast Date (India)",
-        value=default_date
-    )
-    
-    us_game_date = selected_date_ist - timedelta(days=1)
-    
-    st.divider()
-    st.info(f"📅 US Game Night:\n**{us_game_date.strftime('%A, %b %d')}**")
-    
-    if st.button("🔄 Refresh Data", use_container_width=True):
-        st.cache_data.clear()
+    today = datetime.now(IST_TZ).date()
+    # Default to tomorrow
+    sel_date = st.date_input("Broadcast Date (IST)", value=today + timedelta(days=1))
+    us_date = sel_date - timedelta(days=1)
+    st.info(f"US Game Date: **{us_date.strftime('%b %d')}**")
+    if st.button("🔄 Refresh"): st.cache_data.clear()
 
-# --- MAIN APP LOGIC ---
+# Logic
 @st.cache_data(ttl=3600)
-def load_data(date_str):
-    return get_schedule_with_stats(date_str)
+def load_data(d): return get_schedule_with_stats(d)
 
-with st.spinner(f'Scouting games for {selected_date_ist.strftime("%A")}...'):
-    try:
-        df = load_data(str(us_game_date))
-    except Exception as e:
-        st.error(f"Error fetching data: {e}")
-        df = pd.DataFrame()
+try:
+    df = load_data(str(us_date))
+except: df = pd.DataFrame()
 
-# --- DISPLAY ---
+# Display
 if not df.empty and "Score" in df.columns:
-    df = df.sort_values(by='Score', ascending=False)
     
-    # 1. DATA SOURCE INDICATOR
-    data_source = df.iloc[0].get('Source', 'Unknown')
-    if "Manual" in data_source or "Live" in data_source:
-        st.success(f"🟢 **System Status: ONLINE** | {data_source}", icon="✅")
-    else:
-        st.warning(f"🟠 **System Status: FALLBACK** | {data_source}", icon="⚠️")
+    # Status
+    src = df.iloc[0].get('Source', '')
+    if "Manual" in src: st.success(f"🟢 **ONLINE** | Using Live CSV Data", icon="✅")
+    else: st.warning(f"🟠 **FALLBACK** | Using Static Data", icon="⚠️")
+
+    # --- THE DOUBLE HEADER ---
+    st.subheader("📺 Your Double Header")
     
-    # 2. HERO SECTION
-    top_game = df.iloc[0]
+    # Split into Early (Before 8 AM) and Late (8 AM onwards)
+    early_games = df[df['Sort_Hour'] < 8.0].sort_values(by='Score', ascending=False)
+    late_games = df[df['Sort_Hour'] >= 8.0].sort_values(by='Score', ascending=False)
     
-    st.subheader("🔥 Game of the Day")
+    col1, col2 = st.columns(2)
     
-    with st.container(border=True):
-        col1, col2 = st.columns([3, 1])
-        with col1:
-            # Display Title
-            st.markdown(f"### {top_game['Matchup']}")
-            # FIX: Changed 'Time_IST' to 'Time'
-            st.caption(f"⏰ {top_game['Time']}") 
-        with col2:
-            st.metric("Score", f"{top_game['Score']}", delta="Must Watch" if top_game['Score'] > 80 else None)
-            
-        c1, c2, c3, c4 = st.columns(4)
-        c1.metric("Spread", f"{top_game['Spread']}")
-        c2.metric("Stars", f"{int(top_game['Stars'])}")
-        # Handle Pace missing if using old data
-        pace_val = top_game.get('Pace', 100)
-        c3.metric("Pace", f"{pace_val}")
-        c4.caption(f"Data: {top_game.get('Source', 'N/A')}")
+    # 1. Early Slot Card
+    with col1:
+        st.markdown("#### 🌅 Early Slot (5:30 - 8:00 AM)")
+        if not early_games.empty:
+            g = early_games.iloc[0]
+            with st.container(border=True):
+                c1, c2 = st.columns([3,1])
+                c1.markdown(f"**{g['Matchup']}**")
+                c1.caption(f"⏰ {g['Time_IST']} | 📺 {g['TV'] if g['TV'] else 'League Pass'}")
+                c2.metric("Score", f"{g['Score']}", delta="Top Pick")
+        else:
+            st.info("No early games today.")
+
+    # 2. Late Slot Card
+    with col2:
+        st.markdown("#### ☕ Late Slot (8:00 AM+)")
+        if not late_games.empty:
+            g = late_games.iloc[0]
+            with st.container(border=True):
+                c1, c2 = st.columns([3,1])
+                c1.markdown(f"**{g['Matchup']}**")
+                c1.caption(f"⏰ {g['Time_IST']} | 📺 {g['TV'] if g['TV'] else 'League Pass'}")
+                c2.metric("Score", f"{g['Score']}", delta="Top Pick")
+        else:
+            st.info("No late games today.")
 
     st.divider()
     
-    # 3. FULL TABLE
+    # Full Table
     st.subheader("📋 Full Schedule")
+    df_display = df.sort_values(by='Score', ascending=False)
     
     st.dataframe(
-        df,
+        df_display,
         column_config={
             "Home_Logo": st.column_config.ImageColumn("Home", width="small"),
             "Away_Logo": st.column_config.ImageColumn("Away", width="small"),
-            "Matchup": "Game",
-            "Score": st.column_config.ProgressColumn(
-                "Watchability",
-                format="%.1f",
-                min_value=0,
-                max_value=100,
-            ),
-            "Spread": st.column_config.NumberColumn("Spread", format="%.1f"),
-            "Stars": st.column_config.NumberColumn("Star Power", format="%d"),
+            "TV": st.column_config.TextColumn("Broadcast"),
+            "Score": st.column_config.ProgressColumn("Rank", format="%.1f", min_value=0, max_value=100),
+            "Stars": st.column_config.NumberColumn("Stars", format="%d"),
         },
         use_container_width=True,
         hide_index=True,
-        # FIX: Updated column order to match new keys
-        column_order=("Time", "Away_Logo", "Home_Logo", "Matchup", "Score", "Spread", "Stars")
+        column_order=("Time_IST", "TV", "Away_Logo", "Home_Logo", "Matchup", "Score", "Spread", "Stars")
     )
 
-elif df.empty:
-    st.warning("No games found for this date.")
-else:
-    st.error("Data loaded but columns are missing.")
+elif df.empty: st.warning("No games found.")
