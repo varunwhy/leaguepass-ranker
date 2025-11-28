@@ -8,12 +8,13 @@ import pytz
 
 # --- CONSTANTS ---
 IST_TZ = pytz.timezone('Asia/Kolkata')
+ET_TZ = pytz.timezone('US/Eastern')
 STATS_CSV = 'stats.csv'
 TEAM_CSV = 'team_stats.csv'
 INJURY_HTML = 'injuries.html'
 TEAM_LOGOS_URL = "https://cdn.nba.com/logos/nba/{}/primary/L/logo.svg"
 
-# --- TEAM MAPPER (Full Name -> Abbr) ---
+# --- TEAM MAPPER ---
 TEAM_MAP = {
     'Atlanta Hawks': 'ATL', 'Boston Celtics': 'BOS', 'Brooklyn Nets': 'BKN',
     'Charlotte Hornets': 'CHA', 'Chicago Bulls': 'CHI', 'Cleveland Cavaliers': 'CLE',
@@ -34,7 +35,6 @@ def load_players():
         df = pd.read_csv(STATS_CSV)
         df = df[df['Player'] != 'Player']
         
-        # B-Ref legacy mapping for Player Stats
         BREF_ABBR = {'BRK': 'BKN', 'CHO': 'CHA', 'PHO': 'PHX', 'TOT': 'SKIP'}
         
         rosters = {}
@@ -60,19 +60,16 @@ def load_players():
 
 # --- 2. LOAD TEAM STATS (Manual CSV) ---
 def load_team_stats():
-    """
-    Reads team_stats.csv for Pace and Net Rating.
-    """
     defaults = {k: {'pace': 100.0, 'net': 0.0} for k in TEAM_MAP.values()}
-    
     if not os.path.exists(TEAM_CSV): return defaults
     
     try:
         df = pd.read_csv(TEAM_CSV)
-        df = df[df['Team'] != 'League Average'] # Skip footer
+        if 'Team' in df.columns:
+            df = df[df['Team'] != 'League Average']
         
         for _, row in df.iterrows():
-            full_name = row['Team'].replace('*', '') # Remove playoff asterisk
+            full_name = str(row['Team']).replace('*', '')
             abbr = TEAM_MAP.get(full_name)
             
             if abbr:
@@ -87,46 +84,28 @@ def load_team_stats():
         print(f"Team Stats Error: {e}")
         return defaults
 
-# --- 3. LOAD INJURIES (Manual HTML) ---
+# --- 3. LOAD INJURIES (CBS HTML) ---
 def load_injuries():
-    """
-    Parses local injuries.html (Saved from CBS Sports) to find 'Out' players.
-    """
-    if not os.path.exists(INJURY_HTML): 
-        print("⚠️ Injury file not found.")
-        return set()
-    
+    if not os.path.exists(INJURY_HTML): return set()
     try:
-        # Pandas reads all tables on the page
         dfs = pd.read_html(INJURY_HTML)
-        
         injured_set = set()
         
-        # CBS often splits tables by Team, or has one big table. 
-        # We loop through ALL tables found to be safe.
         for df in dfs:
-            # Check if this table has the right columns
-            # CBS columns are usually: Player, Position, Updated, Injury, Injury Status
-            if 'Player' in df.columns and 'Injury Status' in df.columns:
-                for _, row in df.iterrows():
-                    try:
-                        name = row['Player']
-                        status = str(row['Injury Status']).lower()
-                        
-                        # Filter for keywords indicating they are NOT playing
-                        # "Out", "Expected to be out", "Doubtful"
-                        if "out" in status or "doubtful" in status:
-                            injured_set.add(name)
-                    except: continue
-                    
-        print(f"✅ Loaded {len(injured_set)} injured players from CBS.")
+            if 'Player' in df.columns:
+                status_col = 'Injury Status' if 'Injury Status' in df.columns else 'Status'
+                if status_col in df.columns:
+                    for _, row in df.iterrows():
+                        try:
+                            name = row['Player']
+                            status = str(row[status_col]).lower()
+                            if "out" in status or "doubtful" in status:
+                                injured_set.add(name)
+                        except: continue
         return injured_set
-        
-    except Exception as e:
-        print(f"Injury Parse Error: {e}")
-        return set()
-        
-# --- 4. SCHEDULE & ODDS (Live) ---
+    except: return set()
+
+# --- 4. SCHEDULE (CDN) ---
 def get_schedule_from_cdn(target_date_str):
     url = "https://cdn.nba.com/static/json/staticData/scheduleLeagueV2.json"
     try:
@@ -150,8 +129,12 @@ def get_schedule_from_cdn(target_date_str):
         return pd.DataFrame(games)
     except: return pd.DataFrame()
 
-try: from odds import get_betting_spreads
-except: def get_betting_spreads(): return {}
+# --- ODDS HELPER (FIXED SYNTAX) ---
+try: 
+    from odds import get_betting_spreads
+except: 
+    def get_betting_spreads(): 
+        return {}
 
 # --- HELPER ---
 def convert_et_to_ist(time_str, game_date_str):
@@ -172,7 +155,6 @@ def get_schedule_with_stats(target_date_str):
     games_df = get_schedule_from_cdn(target_date_str)
     if games_df.empty: return pd.DataFrame()
 
-    # Load All Manual Data
     rosters = load_players()
     team_stats = load_team_stats()
     injured_set = load_injuries()
@@ -184,22 +166,18 @@ def get_schedule_with_stats(target_date_str):
         home = row['home']
         away = row['away']
         
-        # 1. PACE (From team_stats.csv)
+        # 1. PACE
         h_pace = team_stats.get(home, {'pace': 100})['pace']
         a_pace = team_stats.get(away, {'pace': 100})['pace']
         avg_pace = (h_pace + a_pace) / 2
         
-        # 2. POWER (Roster FP - Injured Players)
+        # 2. POWER
         def get_power(team):
             if team not in rosters: 
-                # Fallback to Net Rating if no roster
                 return 50 + (team_stats.get(team, {'net':0})['net'] * 3)
             
-            # Sum Top 3 AVAILABLE Players
-            # We filter out players found in 'injured_set'
+            # Filter Available
             available = [p['fp'] for p in rosters[team] if p['name'] not in injured_set]
-            
-            # Take top 3 of who is left
             return sum(available[:3])
 
         h_power = get_power(home)
@@ -215,7 +193,7 @@ def get_schedule_with_stats(target_date_str):
         raw_score = 35 + (match_quality * 0.6) + pace_bonus - spread_penalty
         final_score = max(0, min(100, raw_score))
         
-        source = "Manual Data" if rosters else "Static Fallback"
+        source = "Manual CSV" if rosters else "Static Fallback"
         
         enriched_games.append({
             'Time': convert_et_to_ist(row['time'], target_date_str),
