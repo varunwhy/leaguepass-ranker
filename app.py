@@ -3,15 +3,14 @@ import pandas as pd
 from datetime import datetime, timedelta
 import pytz
 
-# Import your backend logic
-# Ensure ranker.py is in the same folder!
+# Import backend logic
 try:
     from ranker import get_schedule_with_stats, IST_TZ
 except ImportError:
-    st.error("Could not import 'ranker.py'. Make sure both files are in the same folder.")
+    st.error("Could not import 'ranker.py'. Make sure files are in the same folder.")
     st.stop()
 
-# --- PAGE CONFIGURATION ---
+# --- PAGE CONFIG ---
 st.set_page_config(
     page_title="NBA League Pass Ranker",
     page_icon="🏀",
@@ -19,8 +18,7 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# --- CSS HACKS FOR MOBILE ---
-# This removes some default padding to make it look better on phones
+# --- CSS HACKS ---
 st.markdown("""
     <style>
     .block-container {
@@ -33,13 +31,11 @@ st.markdown("""
     </style>
     """, unsafe_allow_html=True)
 
-# --- SIDEBAR: CONTROLS ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.title("🏀 NBA Ranker")
     st.caption("Plan your viewing schedule.")
     
-    # 1. Date Picker (India Time)
-    # Default to "Tomorrow" (since we usually plan ahead)
     today_ist = datetime.now(IST_TZ).date()
     default_date = today_ist + timedelta(days=1)
     
@@ -48,26 +44,19 @@ with st.sidebar:
         value=default_date
     )
     
-    # Logic: If I want to watch on Tuesday Morning (India),
-    # I need the schedule from Monday (US).
     us_game_date = selected_date_ist - timedelta(days=1)
     
     st.divider()
+    st.info(f"📅 US Game Night:\n**{us_game_date.strftime('%A, %b %d')}**")
     
-    st.info(f"📅 Fetching US Schedule for:\n**{us_game_date.strftime('%A, %b %d')}**")
-    
-    # Refresh Button (clears cache to get fresh odds/injuries)
     if st.button("🔄 Refresh Data", use_container_width=True):
         st.cache_data.clear()
 
 # --- MAIN APP LOGIC ---
-
-# Cache the heavy lifting so it doesn't re-run every time you click something
-@st.cache_data(ttl=3600) # Cache clears every 1 hour automatically
+@st.cache_data(ttl=3600)
 def load_data(date_str):
     return get_schedule_with_stats(date_str)
 
-# Show a loading spinner while fetching
 with st.spinner(f'Scouting games for {selected_date_ist.strftime("%A")}...'):
     try:
         df = load_data(str(us_game_date))
@@ -77,20 +66,16 @@ with st.spinner(f'Scouting games for {selected_date_ist.strftime("%A")}...'):
 
 # --- DISPLAY ---
 if not df.empty and "Score" in df.columns:
-    # Sort by Score
     df = df.sort_values(by='Score', ascending=False)
     
-    # 1. DATA SOURCE INDICATOR (NEW)
-    # Check the first row to see if we are using Live Stats or Static Data
+    # 1. DATA SOURCE INDICATOR
     data_source = df.iloc[0].get('Source', 'Unknown')
-    
-    # FIX: Use 'in' to match partial string, or match the exact string
-    if "Live Stats" in data_source:
+    if "Manual" in data_source or "Live" in data_source:
         st.success(f"🟢 **System Status: ONLINE** | {data_source}", icon="✅")
     else:
-        st.warning(f"🟠 **System Status: OFFLINE** | API Blocked. Using Static Data", icon="⚠️")
+        st.warning(f"🟠 **System Status: FALLBACK** | {data_source}", icon="⚠️")
     
-    # 2. THE HERO SECTION (Top Game)
+    # 2. HERO SECTION
     top_game = df.iloc[0]
     
     st.subheader("🔥 Game of the Day")
@@ -98,20 +83,24 @@ if not df.empty and "Score" in df.columns:
     with st.container(border=True):
         col1, col2 = st.columns([3, 1])
         with col1:
+            # Display Title
             st.markdown(f"### {top_game['Matchup']}")
-            st.caption(f"⏰ {top_game['Time_IST']}")
+            # FIX: Changed 'Time_IST' to 'Time'
+            st.caption(f"⏰ {top_game['Time']}") 
         with col2:
             st.metric("Score", f"{top_game['Score']}", delta="Must Watch" if top_game['Score'] > 80 else None)
             
-        c1, c2, c3, c4 = st.columns(4) # Added 4th column for extra detail
+        c1, c2, c3, c4 = st.columns(4)
         c1.metric("Spread", f"{top_game['Spread']}")
         c2.metric("Stars", f"{int(top_game['Stars'])}")
-        c3.metric("Pace", f"{top_game['Pace']}")
-        c4.caption(f"Data: {top_game.get('Source', 'N/A')}") # Shows source for specific game
+        # Handle Pace missing if using old data
+        pace_val = top_game.get('Pace', 100)
+        c3.metric("Pace", f"{pace_val}")
+        c4.caption(f"Data: {top_game.get('Source', 'N/A')}")
 
     st.divider()
     
-    
+    # 3. FULL TABLE
     st.subheader("📋 Full Schedule")
     
     st.dataframe(
@@ -131,14 +120,11 @@ if not df.empty and "Score" in df.columns:
         },
         use_container_width=True,
         hide_index=True,
+        # FIX: Updated column order to match new keys
         column_order=("Time", "Away_Logo", "Home_Logo", "Matchup", "Score", "Spread", "Stars")
     )
 
 elif df.empty:
     st.warning("No games found for this date.")
 else:
-
-    st.error("Data loaded but columns are missing. Check ranker.py output.")
-
-
-
+    st.error("Data loaded but columns are missing.")
