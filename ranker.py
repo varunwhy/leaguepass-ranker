@@ -5,26 +5,24 @@ import requests
 import re
 from datetime import datetime
 import pytz
-from thefuzz import process
 
-# --- CONFIG ---
-STATS_CSV = 'stats.csv'  # The file you downloaded from B-Ref
+# --- CONSTANTS ---
+IST_TZ = pytz.timezone('Asia/Kolkata')
+ET_TZ = pytz.timezone('US/Eastern')
+STATS_CSV = 'stats.csv'
 TEAM_LOGOS_URL = "https://cdn.nba.com/logos/nba/{}/primary/L/logo.svg"
 
-# --- 1. LOAD DATA (From Manual CSV) ---
+# --- 1. LOAD DATA (Manual CSV) ---
 def load_player_stats_from_csv():
-    """
-    Reads the manually downloaded stats.csv from Basketball-Reference.
-    """
     if not os.path.exists(STATS_CSV):
         return None
     
     try:
-        # B-Ref CSVs often have a header row that repeats, so we filter it
         df = pd.read_csv(STATS_CSV)
-        df = df[df['Player'] != 'Player'] # Clean rows
+        # Filter header rows
+        df = df[df['Player'] != 'Player']
         
-        # Map Teams (B-Ref uses old codes like CHO for Charlotte)
+        # Map Teams
         BREF_MAP = {'BRK': 'BKN', 'CHO': 'CHA', 'PHO': 'PHX', 'TOT': 'SKIP'}
         
         rosters = {}
@@ -32,27 +30,22 @@ def load_player_stats_from_csv():
         for _, row in df.iterrows():
             raw_team = row['Tm']
             team = BREF_MAP.get(raw_team, raw_team)
-            if team == 'SKIP': continue # Skip 'Total' rows, we want specific team stats
+            if team == 'SKIP': continue
             
             # Clean Name
-            name = row['Player'].split("\\")[0] # B-Ref CSV sometimes has "Name\namecode"
+            name = str(row['Player']).split("\\")[0]
             
             try:
-                # Calculate Fantasy Points
-                pts = float(row['PTS'])
-                trb = float(row['TRB'])
-                ast = float(row['AST'])
-                stl = float(row['STL'])
-                blk = float(row['BLK'])
-                tov = float(row['TOV'])
-                
-                fp = pts + (1.2*trb) + (1.5*ast) + (3*stl) + (3*blk) - tov
-            except: continue
+                # Calc FP
+                fp = float(row['PTS']) + (1.2*float(row['TRB'])) + (1.5*float(row['AST'])) + \
+                     (3*float(row['STL'])) + (3*float(row['BLK'])) - float(row['TOV'])
+            except: 
+                continue
             
             if team not in rosters: rosters[team] = []
             rosters[team].append({'name': name, 'fp': round(fp, 1)})
             
-        # Sort each team by best players
+        # Sort
         for t in rosters:
             rosters[t].sort(key=lambda x: x['fp'], reverse=True)
             
@@ -61,7 +54,7 @@ def load_player_stats_from_csv():
         print(f"Error reading CSV: {e}")
         return None
 
-# --- 2. SCHEDULE (CDN - Keep this, it works!) ---
+# --- 2. SCHEDULE (CDN) ---
 def get_schedule_from_cdn(target_date_str):
     url = "https://cdn.nba.com/static/json/staticData/scheduleLeagueV2.json"
     try:
@@ -77,31 +70,39 @@ def get_schedule_from_cdn(target_date_str):
                     games_found.append({
                         'home': game['homeTeam']['teamTricode'],
                         'away': game['awayTeam']['teamTricode'],
-                        'home_id': game['homeTeam']['teamId'], # Added for Logo
-                        'away_id': game['awayTeam']['teamId'], # Added for Logo
+                        'home_id': game['homeTeam']['teamId'],
+                        'away_id': game['awayTeam']['teamId'],
                         'time': game.get('gameStatusText', '')
                     })
                 break
         return pd.DataFrame(games_found)
     except: return pd.DataFrame()
 
-# --- 3. ODDS (Keep this) ---
+# --- 3. ODDS ---
 try:
     from odds import get_betting_spreads
 except:
     def get_betting_spreads(): return {}
 
-# --- HELPER: Timezone ---
+# --- HELPER ---
 def convert_et_to_ist(time_str, game_date_str):
-    # (Use your existing function logic here)
-    return time_str 
+    if not time_str or "Final" in time_str: return time_str
+    try:
+        match = re.search(r"(\d+):(\d+)\s+(am|pm)", time_str, re.IGNORECASE)
+        if not match: return time_str
+        h, m, p = match.groups()
+        h = int(h) + (12 if p.lower() == 'pm' and int(h) != 12 else 0)
+        h = 0 if p.lower() == 'am' and int(h) == 12 else h
+        dt_us = datetime.strptime(f"{game_date_str} {h}:{m}", "%Y-%m-%d %H:%M")
+        dt_us = ET_TZ.localize(dt_us)
+        return dt_us.astimezone(IST_TZ).strftime("%a %I:%M %p")
+    except: return time_str
 
 # --- MAIN RANKER ---
 def get_schedule_with_stats(target_date_str):
     games_df = get_schedule_from_cdn(target_date_str)
     if games_df.empty: return pd.DataFrame()
 
-    # Load from CSV
     team_rosters = load_player_stats_from_csv()
     spreads = get_betting_spreads()
     
@@ -111,14 +112,12 @@ def get_schedule_with_stats(target_date_str):
         home = row['home']
         away = row['away']
         
-        # Team Power Calculation
         h_power, a_power = 50, 50
         source = "Static Fallback"
         
         if team_rosters:
             source = "Manual CSV"
             # Sum Top 3 Players
-            # (Availability ignored in this version since we rely on manual CSV)
             if home in team_rosters:
                 h_power = sum([p['fp'] for p in team_rosters[home][:3]])
             if away in team_rosters:
@@ -126,14 +125,14 @@ def get_schedule_with_stats(target_date_str):
         
         match_quality = (h_power + a_power) / 3.5 
         
-        # Scoring Logic
         spread = spreads.get(home, 10.0)
         spread_penalty = min(abs(spread) * 2.5, 45)
+        
         raw_score = 35 + (match_quality * 0.6) - spread_penalty
         final_score = max(0, min(100, raw_score))
         
         enriched_games.append({
-            'Time': row['time'], # Simplified
+            'Time': convert_et_to_ist(row['time'], target_date_str),
             'Matchup': f"{away} @ {home}",
             'Spread': spread,
             'Stars': int(match_quality),
