@@ -105,18 +105,24 @@ def get_schedule_from_cdn(target_date_str):
             if target_fmt in d['gameDate']:
                 for game in d['games']:
                     
-                    # --- TV LOGIC FIX ---
-                    tv_display = "League Pass" # Default
+                    # --- TV LOGIC IMPROVED ---
+                    # 1. Start with "League Pass" as the default
+                    tv_display = "League Pass"
+                    
                     broadcasters = game.get('broadcasters', {})
-                    
-                    # 1. Check National TV first (ESPN, TNT, NBATV)
                     nat_list = broadcasters.get('national', [])
-                    if nat_list:
-                        tv_display = nat_list[0]['broadcasterDisplay']
                     
-                    # 2. If no national, just mark as 'Local' or leave as League Pass
+                    # 2. Check for National Broadcasters (US)
+                    if nat_list:
+                        # Grab the first one (e.g., ESPN, TNT)
+                        tv_display = nat_list[0]['broadcasterDisplay']
                     else:
-                        tv_display = "Local Broadcast"
+                        # 3. Deep Check: Sometimes 'Canadian' or other feeds behave like national
+                        can_list = broadcasters.get('canadian', [])
+                        if can_list and not nat_list:
+                            # Optional: Show 'NBATV Canada' etc if you want, 
+                            # otherwise stick to League Pass
+                            pass 
 
                     games.append({
                         'home': game['homeTeam']['teamTricode'],
@@ -220,3 +226,4 @@ def get_schedule_with_stats(target_date_str):
         })
         
     return pd.DataFrame(enriched_games)
+
