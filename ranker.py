@@ -130,7 +130,8 @@ def get_schedule_from_cdn(target_date_str):
 
 # --- ODDS ---
 try: from odds import get_betting_spreads
-except: def get_betting_spreads(): return {}
+except: 
+    def get_betting_spreads(): return {}
 
 # --- HELPER: Time Parsing for Sorting ---
 def parse_time(time_str, date_str):
@@ -249,3 +250,4 @@ def get_schedule_with_stats(target_date_str):
         })
         
     return pd.DataFrame(enriched_games)
+
